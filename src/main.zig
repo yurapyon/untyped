@@ -20,7 +20,7 @@ const ArrayList = std.ArrayList;
 pub const VM = struct {
     const Self = @This();
 
-    const Error = error{
+    pub const Error = error{
         StackUnderflow,
         StackOverflow,
         ReturnStackUnderflow,
@@ -32,12 +32,14 @@ pub const VM = struct {
         EndOfInput,
     } || Allocator.Error;
 
-    // TODO make sure @sizeOf(usize) == @sizeOf(Cell)
-    const Cell = u64;
-    const Builtin = fn (self: *Self) Error!void;
+    pub const baseLib = @embedFile("base.fs");
 
-    const forth_false: Cell = 0;
-    const forth_true = ~forth_false;
+    // TODO make sure @sizeOf(usize) == @sizeOf(Cell)
+    pub const Cell = u64;
+    pub const Builtin = fn (self: *Self) Error!void;
+
+    pub const forth_false: Cell = 0;
+    pub const forth_true = ~forth_false;
 
     const builtin_fn_id = 0;
 
@@ -94,7 +96,7 @@ pub const VM = struct {
     line_buf: [*]u8,
     dictionary: [*]u8,
 
-    pub fn init(allocator: *Allocator) Allocator.Error!Self {
+    pub fn init(allocator: *Allocator) Error!Self {
         var ret: Self = undefined;
 
         ret.allocator = allocator;
@@ -126,6 +128,9 @@ pub const VM = struct {
         ret.rsp.* = @ptrToInt(ret.rstack);
         ret.line_buf_len.* = 0;
 
+        try ret.initBuiltins();
+        try ret.readInput(baseLib);
+
         return ret;
     }
 
@@ -134,6 +139,51 @@ pub const VM = struct {
             self.allocator.free(input);
         }
         self.allocator.free(self.mem);
+    }
+
+    fn initBuiltins(self: *Self) Error!void {
+        try self.createBuiltin("docol", 0, &docol);
+        self.docol_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("lit", 0, &lit);
+        self.lit_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("exit", 0, &exit);
+        self.exit_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("quit", 0, &quit);
+        self.quit_address = wordHeaderCodeFieldAddress(self.latest.*);
+
+        try self.createBuiltin("define", 0, &define);
+        try self.createBuiltin("word", 0, &word);
+        try self.createBuiltin("find", 0, &find);
+        try self.createBuiltin("@", 0, &fetch);
+        try self.createBuiltin("!", 0, &store);
+        try self.createBuiltin("c@", 0, &fetchByte);
+        try self.createBuiltin("c!", 0, &storeByte);
+        try self.createBuiltin(",", 0, &comma);
+        try self.createBuiltin("c,", 0, &commaByte);
+        try self.createBuiltin("'", 0, &tick);
+        try self.createBuiltin("[']", word_immediate_flag, &bracketTick);
+        try self.createBuiltin("[", word_immediate_flag, &lBracket);
+        try self.createBuiltin("]", 0, &rBracket);
+        try self.createBuiltin(":", 0, &colon);
+        try self.createBuiltin(";", word_immediate_flag, &semicolon);
+        try self.createBuiltin("immediate", word_immediate_flag, &immediate);
+        try self.createBuiltin(">cfa", 0, &cfa_);
+        try self.createBuiltin("branch", 0, &branch);
+        try self.createBuiltin("0branch", 0, &zbranch);
+
+        try self.createBuiltin("bye", 0, &bye);
+        try self.createBuiltin(".s", 0, &showStack);
+        try self.createBuiltin("dup", 0, &dup);
+        try self.createBuiltin("over", 0, &over);
+        try self.createBuiltin("drop", 0, &drop);
+        try self.createBuiltin("swap", 0, &swap);
+        try self.createBuiltin("cell", 0, &cell);
+        try self.createBuiltin("here", 0, &here);
+        try self.createBuiltin("type", 0, &type_);
+        try self.createBuiltin("cr", 0, &cr);
+        try self.createBuiltin("+", 0, &plus);
+        try self.createBuiltin("-", 0, &minus);
+        try self.createBuiltin("*", 0, &times);
     }
 
     //;
@@ -243,6 +293,20 @@ pub const VM = struct {
         self.should_stop_interpreting = false;
     }
 
+    pub fn readNextChar(self: *Self) Error!u8 {
+        if (self.last_input) |input| {
+            if (self.input_at >= input.len) {
+                return error.EndOfInput;
+            }
+
+            const ch = input[self.input_at];
+            self.input_at += 1;
+            return ch;
+        } else {
+            return error.NoInputBuffer;
+        }
+    }
+
     pub fn readNextWord(self: *Self) Error!usize {
         if (self.last_input == null) {
             return error.NoInputBuffer;
@@ -255,8 +319,6 @@ pub const VM = struct {
 
         while (true) {
             if (self.input_at >= input.len) {
-                // self.line_buf_len.* = 0;
-                // return 0;
                 return error.EndOfInput;
             }
 
@@ -268,8 +330,6 @@ pub const VM = struct {
             } else if (ch == '\\') {
                 while (true) {
                     if (self.input_at >= input.len) {
-                        // self.line_buf_len.* = 0;
-                        // return 0;
                         return error.EndOfInput;
                     }
 
@@ -561,6 +621,11 @@ pub const VM = struct {
         }
     }
 
+    pub fn key(self: *Self) Error!void {
+        const ch = try self.readNextChar();
+        try self.push(ch);
+    }
+
     pub fn lit(self: *Self) Error!void {
         try self.push(try self.checkedReadCell(self.next));
         self.next += @sizeOf(Cell);
@@ -571,18 +636,36 @@ pub const VM = struct {
         try self.push(wordHeaderCodeFieldAddress(addr));
     }
 
+    pub fn branch(self: *Self) Error!void {
+        self.next += try self.checkedReadCell(self.next);
+    }
+
+    pub fn zbranch(self: *Self) Error!void {
+        if ((try self.pop()) == forth_false) {
+            self.next += try self.checkedReadCell(self.next);
+        } else {
+            self.next += @sizeOf(Cell);
+        }
+    }
+
     pub fn tick(self: *Self) Error!void {
         try self.word();
         try self.find();
         // TODO handle not found
         _ = try self.pop();
         try self.cfa_();
+    }
 
-        if (self.state.* == forth_true) {
-            try self.push(self.lit_address);
-            try self.comma();
-            try self.comma();
-        }
+    pub fn bracketTick(self: *Self) Error!void {
+        try self.word();
+        try self.find();
+        // TODO handle not found
+        _ = try self.pop();
+        try self.cfa_();
+
+        try self.push(self.lit_address);
+        try self.comma();
+        try self.comma();
     }
 
     pub fn quit(self: *Self) Error!void {
@@ -604,7 +687,6 @@ pub const VM = struct {
                 },
                 else => return err,
             };
-            // TODO check we actually have a word here
             try self.find();
 
             const find_info = try self.pop();
@@ -615,6 +697,10 @@ pub const VM = struct {
                 const cfa = wordHeaderCodeFieldAddress(addr);
                 const cmd = cfa;
                 if (is_compiling and !is_immediate) {
+                    // note:
+                    //   'comilation semantics' are here
+                    //   so if i add postpone, it has something to do with this
+                    //   could make flags more than just 'immediate or not'
                     try self.push(cfa);
                     try self.comma();
                 } else {
@@ -678,10 +764,23 @@ pub const VM = struct {
         try self.push(a);
     }
 
+    pub fn drop(self: *Self) Error!void {
+        _ = try self.pop();
+    }
+
+    // TODO do this with out the popping
     pub fn over(self: *Self) Error!void {
         const a = try self.pop();
         const b = try self.pop();
         try self.push(b);
+        try self.push(a);
+        try self.push(b);
+    }
+
+    // TODO do this with out the popping
+    pub fn swap(self: *Self) Error!void {
+        const a = try self.pop();
+        const b = try self.pop();
         try self.push(a);
         try self.push(b);
     }
@@ -696,6 +795,12 @@ pub const VM = struct {
         try self.push(a +% b);
     }
 
+    pub fn minus(self: *Self) Error!void {
+        const a = try self.pop();
+        const b = try self.pop();
+        try self.push(b -% a);
+    }
+
     pub fn times(self: *Self) Error!void {
         const a = try self.pop();
         const b = try self.pop();
@@ -707,87 +812,17 @@ pub const VM = struct {
         const addr = try self.pop();
         std.debug.print("{}", .{stringAt(addr, len)});
     }
+
+    pub fn cr(self: *Self) Error!void {
+        std.debug.print("\n", .{});
+    }
 };
 
 pub fn demo(allocator: *Allocator) !void {
     var vm = try VM.init(allocator);
     defer vm.deinit();
 
-    try vm.createBuiltin("docol", 0, &VM.docol);
-    vm.docol_address = VM.wordHeaderCodeFieldAddress(vm.latest.*);
-    try vm.createBuiltin("lit", 0, &VM.lit);
-    vm.lit_address = VM.wordHeaderCodeFieldAddress(vm.latest.*);
-    try vm.createBuiltin("exit", 0, &VM.exit);
-    vm.exit_address = VM.wordHeaderCodeFieldAddress(vm.latest.*);
-    try vm.createBuiltin("quit", 0, &VM.quit);
-    vm.quit_address = VM.wordHeaderCodeFieldAddress(vm.latest.*);
-
-    try vm.createBuiltin("define", 0, &VM.define);
-    try vm.createBuiltin("@", 0, &VM.fetch);
-    try vm.createBuiltin("!", 0, &VM.store);
-    try vm.createBuiltin("c@", 0, &VM.fetchByte);
-    try vm.createBuiltin("c!", 0, &VM.storeByte);
-    try vm.createBuiltin(",", 0, &VM.comma);
-    try vm.createBuiltin("c,", 0, &VM.commaByte);
-    try vm.createBuiltin("'", VM.word_immediate_flag, &VM.tick);
-    try vm.createBuiltin("[", VM.word_immediate_flag, &VM.lBracket);
-    try vm.createBuiltin("]", 0, &VM.rBracket);
-    try vm.createBuiltin(":", 0, &VM.colon);
-    try vm.createBuiltin(";", VM.word_immediate_flag, &VM.semicolon);
-    try vm.createBuiltin("immediate", VM.word_immediate_flag, &VM.immediate);
-
-    try vm.createBuiltin("bye", 0, &VM.bye);
-    try vm.createBuiltin(".s", 0, &VM.showStack);
-    try vm.createBuiltin("dup", 0, &VM.dup);
-    try vm.createBuiltin("over", 0, &VM.over);
-    try vm.createBuiltin("cell", 0, &VM.cell);
-    try vm.createBuiltin("here", 0, &VM.here);
-    try vm.createBuiltin("+", 0, &VM.plus);
-    try vm.createBuiltin("*", 0, &VM.times);
-    try vm.readInput(
-        \\: ['] ' lit , ; immediate
-        \\: cells cell * ;
-        \\                                           \\ TODO why is this 3
-        \\: create define ['] docol , ['] lit , here @ 3 cells + , ['] exit , ['] exit , ;
-        \\ \\ : constant create , does> ____ ;
-        \\create asdf 1234 , asdf asdf @ .s \\ comment
-    );
-    // try vm.readInput(": cells cell * ; : create define ' docol , ' lit , here @ 3 cells + , ' exit , ' exit , ; create asdf");
-    // try vm.readInput("define asdf");
-    // try vm.readInput(": hello 5 snd + ; hello .s");
     try vm.quit();
-
-    //     try vm.createWordHeader("defined", 0);
-    //     try vm.createWordHeader("next", VM.word_hidden_flag);
-    //     try vm.createWordHeader("next2", VM.word_immediate_flag);
-    //
-    //     try vm.readInput("defined not next next2");
-    //     try vm.word();
-    //     vm.debugPrintStack();
-    //     try vm.find();
-    //     vm.debugPrintStack();
-    //     try vm.word();
-    //     vm.debugPrintStack();
-    //     try vm.find();
-    //     vm.debugPrintStack();
-    //     try vm.word();
-    //     vm.debugPrintStack();
-    //     try vm.find();
-    //     vm.debugPrintStack();
-    //     try vm.word();
-    //     vm.debugPrintStack();
-    //     try vm.find();
-    //     vm.debugPrintStack();
-
-    //     try vm.word();
-    //     vm.debugPrintStack();
-    //     try vm.type_();
-
-    // var len = try vm.readNextWord();
-    // while (len > 0) {
-    // std.debug.print("{}\n", .{vm.line_buf[0..len]});
-    // len = try vm.readNextWord();
-    // }
 }
 
 test "" {
