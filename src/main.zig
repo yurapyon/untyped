@@ -30,17 +30,20 @@ pub const VM = struct {
         NoInputBuffer,
         WordNotFound,
         EndOfInput,
+        InvalidNumber,
     } || Allocator.Error;
 
     pub const baseLib = @embedFile("base.fs");
 
     // TODO make sure @sizeOf(usize) == @sizeOf(Cell)
     pub const Cell = u64;
+    pub const SCell = i64;
     pub const Builtin = fn (self: *Self) Error!void;
 
     pub const forth_false: Cell = 0;
     pub const forth_true = ~forth_false;
 
+    // TODO use doBuiltin dummy function address
     const builtin_fn_id = 0;
 
     const find_info_not_found = 0;
@@ -151,6 +154,24 @@ pub const VM = struct {
         try self.createBuiltin("quit", 0, &quit);
         self.quit_address = wordHeaderCodeFieldAddress(self.latest.*);
 
+        try self.createBuiltin("state", 0, &state);
+        try self.createBuiltin("latest", 0, &latest);
+        try self.createBuiltin("here", 0, &here);
+        try self.createBuiltin("base", 0, &base);
+        try self.createBuiltin("s0", 0, &s0);
+        try self.createBuiltin("sp", 0, &sp);
+        try self.createBuiltin("rs0", 0, &rs0);
+        try self.createBuiltin("rsp", 0, &rsp);
+
+        try self.createBuiltin("dup", 0, &dup);
+        try self.createBuiltin("over", 0, &over);
+        try self.createBuiltin("drop", 0, &drop);
+        try self.createBuiltin("swap", 0, &swap);
+
+        try self.createBuiltin(">R", 0, &toR);
+        try self.createBuiltin("R>", 0, &fromR);
+        try self.createBuiltin("R@", 0, &rFetch);
+
         try self.createBuiltin("define", 0, &define);
         try self.createBuiltin("word", 0, &word);
         try self.createBuiltin("find", 0, &find);
@@ -167,23 +188,27 @@ pub const VM = struct {
         try self.createBuiltin(":", 0, &colon);
         try self.createBuiltin(";", word_immediate_flag, &semicolon);
         try self.createBuiltin("immediate", word_immediate_flag, &immediate);
+        try self.createBuiltin("hidden", word_immediate_flag, &hidden);
         try self.createBuiltin(">cfa", 0, &cfa_);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
 
         try self.createBuiltin("bye", 0, &bye);
-        try self.createBuiltin(".s", 0, &showStack);
-        try self.createBuiltin("dup", 0, &dup);
-        try self.createBuiltin("over", 0, &over);
-        try self.createBuiltin("drop", 0, &drop);
-        try self.createBuiltin("swap", 0, &swap);
-        try self.createBuiltin("cell", 0, &cell);
-        try self.createBuiltin("here", 0, &here);
-        try self.createBuiltin("type", 0, &type_);
-        try self.createBuiltin("cr", 0, &cr);
+        // TODO interpret
+        //      execute
+
+        try self.createBuiltin("=", 0, &equal);
         try self.createBuiltin("+", 0, &plus);
         try self.createBuiltin("-", 0, &minus);
         try self.createBuiltin("*", 0, &times);
+        try self.createBuiltin("cell", 0, &cell);
+        try self.createBuiltin("number", 0, &number);
+
+        try self.createBuiltin(".s", 0, &showStack);
+        try self.createBuiltin("type", 0, &type_);
+        try self.createBuiltin("key", 0, &key);
+        try self.createBuiltin("char", 0, &char);
+        try self.createBuiltin("emit", 0, &emit);
     }
 
     //;
@@ -299,6 +324,11 @@ pub const VM = struct {
                 return error.EndOfInput;
             }
 
+            self.input_at += 1;
+            if (self.input_at >= input.len) {
+                return error.EndOfInput;
+            }
+
             const ch = input[self.input_at];
             self.input_at += 1;
             return ch;
@@ -371,12 +401,44 @@ pub const VM = struct {
         return len;
     }
 
+    // TODO rename/refactor somehow
     pub fn stringAt(addr: Cell, len: Cell) []u8 {
         var str: []u8 = undefined;
         str.ptr = @intToPtr([*]u8, addr);
         str.len = len;
         return str;
     }
+
+    pub fn parseNumber(str: []const u8, base_: Cell) Error!Cell {
+        var is_negative = false;
+        var acc: Cell = 0;
+        var read_at: usize = 0;
+
+        if (str[0] == '-') {
+            is_negative = true;
+            read_at += 1;
+        } else if (str[0] == '+') {
+            read_at += 1;
+        }
+
+        while (read_at < str.len) : (read_at += 1) {
+            const ch = str[read_at];
+            const digit = switch (ch) {
+                '0'...'9' => ch - '0',
+                'A'...'Z' => ch - 'A' + 10,
+                'a'...'z' => ch - 'a' + 10,
+                else => return error.InvalidNumber,
+            };
+            if (digit > base_) return error.InvalidNumber;
+            acc = acc * base_ + digit;
+        }
+        if (is_negative) {
+            acc = @bitCast(Cell, -@intCast(SCell, acc));
+        }
+        return acc;
+    }
+
+    //;
 
     // word header is:
     // |        | | | | | | | ... | ...
@@ -471,7 +533,7 @@ pub const VM = struct {
     }
 
     // if word not found, will return 0
-    // TODO return ?Cell ?
+    // TODO return ?Cell or error not found
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
         const name = stringAt(addr, len);
 
@@ -501,18 +563,102 @@ pub const VM = struct {
 
     // builtins
 
-    pub fn showStack(self: *Self) Error!void {
-        self.debugPrintStack();
-    }
-
     pub fn docol(self: *Self) Error!void {
         try self.rpush(self.last_ip);
         self.next = self.exec_cfa + @sizeOf(Cell);
     }
 
+    pub fn lit(self: *Self) Error!void {
+        try self.push(try self.checkedReadCell(self.next));
+        self.next += @sizeOf(Cell);
+    }
+
     pub fn exit(self: *Self) Error!void {
         self.next = try self.rpop();
     }
+
+    pub fn quit(self: *Self) Error!void {
+        self.rsp.* = @ptrToInt(self.rstack);
+        try self.interpret();
+    }
+
+    //;
+
+    pub fn state(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.state));
+    }
+
+    pub fn latest(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.latest));
+    }
+
+    pub fn here(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.here));
+    }
+
+    pub fn base(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.base));
+    }
+
+    pub fn s0(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.stack));
+    }
+
+    pub fn sp(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.sp));
+    }
+
+    pub fn rs0(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.rstack));
+    }
+
+    pub fn rsp(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.rsp));
+    }
+
+    //;
+
+    pub fn dup(self: *Self) Error!void {
+        const a = try self.pop();
+        try self.push(a);
+        try self.push(a);
+    }
+
+    // TODO do this with out the popping
+    pub fn over(self: *Self) Error!void {
+        const a = try self.pop();
+        const b = try self.pop();
+        try self.push(b);
+        try self.push(a);
+        try self.push(b);
+    }
+
+    pub fn drop(self: *Self) Error!void {
+        _ = try self.pop();
+    }
+
+    // TODO do this with out the popping
+    pub fn swap(self: *Self) Error!void {
+        const a = try self.pop();
+        const b = try self.pop();
+        try self.push(a);
+        try self.push(b);
+    }
+
+    pub fn toR(self: *Self) Error!void {
+        try self.rpush(try self.pop());
+    }
+
+    pub fn fromR(self: *Self) Error!void {
+        try self.push(try self.rpop());
+    }
+
+    pub fn rFetch(self: *Self) Error!void {
+        // TODO use stack indexing
+        try self.push(try self.checkedReadCell(self.rsp.* - @sizeOf(Cell)));
+    }
+
+    //;
 
     pub fn define(self: *Self) Error!void {
         try self.word();
@@ -521,84 +667,8 @@ pub const VM = struct {
         try self.createWordHeader(stringAt(addr, len), 0);
     }
 
-    pub fn pushLatest(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.latest));
-    }
-
-    pub fn hidden(self: *Self) Error!void {
-        const addr = try self.pop();
-        const flags = wordHeaderFlags(addr);
-        wordHeaderSetFlags(addr, flags ^ word_hidden_flag);
-    }
-
-    pub fn immediate(self: *Self) Error!void {
-        // TODO should this take an addr like hidden
-        // const addr = try self.pop();
-        const flags = wordHeaderFlags(self.latest.*);
-        wordHeaderSetFlags(self.latest.*, flags ^ word_immediate_flag);
-    }
-
-    pub fn lBracket(self: *Self) Error!void {
-        self.state.* = forth_false;
-    }
-
-    pub fn rBracket(self: *Self) Error!void {
-        self.state.* = forth_true;
-    }
-
-    pub fn colon(self: *Self) Error!void {
-        try self.define();
-        try self.push(self.docol_address);
-        try self.comma();
-        try self.pushLatest();
-        try self.fetch();
-        try self.hidden();
-        try self.rBracket();
-    }
-
-    pub fn semicolon(self: *Self) Error!void {
-        try self.push(self.exit_address);
-        try self.comma();
-        try self.pushLatest();
-        try self.fetch();
-        try self.hidden();
-        try self.lBracket();
-    }
-
-    pub fn fetch(self: *Self) Error!void {
-        const addr = try self.pop();
-        try self.push(try self.checkedReadCell(addr));
-    }
-
-    pub fn fetchByte(self: *Self) Error!void {
-        const addr = try self.pop();
-        try self.push(try self.checkedReadByte(addr));
-    }
-
-    pub fn store(self: *Self) Error!void {
-        const addr = try self.pop();
-        const val = try self.pop();
-        try self.checkedWriteCell(addr, val);
-    }
-
-    pub fn storeByte(self: *Self) Error!void {
-        const addr = try self.pop();
-        const val = try self.pop();
-        try self.checkedWriteByte(addr, @intCast(u8, val & 0xff));
-    }
-
-    pub fn comma(self: *Self) Error!void {
-        try self.push(self.here.*);
-        try self.store();
-        self.here.* += @sizeOf(Cell);
-    }
-
-    pub fn commaByte(self: *Self) Error!void {
-        try self.push(self.here.*);
-        try self.storeByte();
-        self.here.* += 1;
-    }
-
+    // TODO word doesnt really work when interpreting
+    //      the next word you read after calling word messes with the line_buf
     pub fn word(self: *Self) Error!void {
         const len = try self.readNextWord();
         try self.push(@ptrToInt(self.line_buf));
@@ -621,31 +691,38 @@ pub const VM = struct {
         }
     }
 
-    pub fn key(self: *Self) Error!void {
-        const ch = try self.readNextChar();
-        try self.push(ch);
-    }
-
-    pub fn lit(self: *Self) Error!void {
-        try self.push(try self.checkedReadCell(self.next));
-        self.next += @sizeOf(Cell);
-    }
-
-    pub fn cfa_(self: *Self) Error!void {
+    pub fn fetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.push(wordHeaderCodeFieldAddress(addr));
+        try self.push(try self.checkedReadCell(addr));
     }
 
-    pub fn branch(self: *Self) Error!void {
-        self.next += try self.checkedReadCell(self.next);
+    pub fn store(self: *Self) Error!void {
+        const addr = try self.pop();
+        const val = try self.pop();
+        try self.checkedWriteCell(addr, val);
     }
 
-    pub fn zbranch(self: *Self) Error!void {
-        if ((try self.pop()) == forth_false) {
-            self.next += try self.checkedReadCell(self.next);
-        } else {
-            self.next += @sizeOf(Cell);
-        }
+    pub fn fetchByte(self: *Self) Error!void {
+        const addr = try self.pop();
+        try self.push(try self.checkedReadByte(addr));
+    }
+
+    pub fn storeByte(self: *Self) Error!void {
+        const addr = try self.pop();
+        const val = try self.pop();
+        try self.checkedWriteByte(addr, @intCast(u8, val & 0xff));
+    }
+
+    pub fn comma(self: *Self) Error!void {
+        try self.push(self.here.*);
+        try self.store();
+        self.here.* += @sizeOf(Cell);
+    }
+
+    pub fn commaByte(self: *Self) Error!void {
+        try self.push(self.here.*);
+        try self.storeByte();
+        self.here.* += 1;
     }
 
     pub fn tick(self: *Self) Error!void {
@@ -668,9 +745,67 @@ pub const VM = struct {
         try self.comma();
     }
 
-    pub fn quit(self: *Self) Error!void {
-        self.rsp.* = @ptrToInt(self.rstack);
-        try self.interpret();
+    pub fn lBracket(self: *Self) Error!void {
+        self.state.* = forth_false;
+    }
+
+    pub fn rBracket(self: *Self) Error!void {
+        self.state.* = forth_true;
+    }
+
+    pub fn colon(self: *Self) Error!void {
+        try self.define();
+        try self.push(self.docol_address);
+        try self.comma();
+        try Self.latest(self);
+        try self.fetch();
+        try self.hidden();
+        try self.rBracket();
+    }
+
+    pub fn semicolon(self: *Self) Error!void {
+        try self.push(self.exit_address);
+        try self.comma();
+        try Self.latest(self);
+        try self.fetch();
+        try self.hidden();
+        try self.lBracket();
+    }
+
+    pub fn immediate(self: *Self) Error!void {
+        // TODO should this take an addr like hidden
+        // const addr = try self.pop();
+        const flags = wordHeaderFlags(self.latest.*);
+        wordHeaderSetFlags(self.latest.*, flags ^ word_immediate_flag);
+    }
+
+    pub fn hidden(self: *Self) Error!void {
+        const addr = try self.pop();
+        const flags = wordHeaderFlags(addr);
+        wordHeaderSetFlags(addr, flags ^ word_hidden_flag);
+    }
+
+    pub fn cfa_(self: *Self) Error!void {
+        const addr = try self.pop();
+        try self.push(wordHeaderCodeFieldAddress(addr));
+    }
+
+    pub fn branch(self: *Self) Error!void {
+        self.next +%= try self.checkedReadCell(self.next);
+    }
+
+    pub fn zbranch(self: *Self) Error!void {
+        if ((try self.pop()) == forth_false) {
+            self.next +%= try self.checkedReadCell(self.next);
+        } else {
+            self.next += @sizeOf(Cell);
+        }
+    }
+
+    //;
+
+    pub fn bye(self: *Self) Error!void {
+        self.should_stop_interpreting = true;
     }
 
     pub fn interpret(self: *Self) Error!void {
@@ -730,7 +865,7 @@ pub const VM = struct {
                 var str: []const u8 = undefined;
                 str.ptr = self.line_buf;
                 str.len = self.line_buf_len.*;
-                const maybe_num = std.fmt.parseInt(Cell, str, @intCast(u8, self.base.* & 0xff)) catch null;
+                const maybe_num = parseNumber(str, self.base.*) catch null;
                 if (maybe_num) |num| {
                     if (is_compiling) {
                         try self.push(self.lit_address);
@@ -741,7 +876,7 @@ pub const VM = struct {
                         try self.push(num);
                     }
                 } else {
-                    // TODO word not found errors for comments and \n and trailing whitespace??
+                    std.debug.print("word not found: '{}'\n", .{str});
                     return error.WordNotFound;
                 }
             }
@@ -750,43 +885,10 @@ pub const VM = struct {
 
     //;
 
-    pub fn bye(self: *Self) Error!void {
-        self.should_stop_interpreting = true;
-    }
-
-    pub fn here(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.here));
-    }
-
-    pub fn dup(self: *Self) Error!void {
-        const a = try self.pop();
-        try self.push(a);
-        try self.push(a);
-    }
-
-    pub fn drop(self: *Self) Error!void {
-        _ = try self.pop();
-    }
-
-    // TODO do this with out the popping
-    pub fn over(self: *Self) Error!void {
+    pub fn equal(self: *Self) Error!void {
         const a = try self.pop();
         const b = try self.pop();
-        try self.push(b);
-        try self.push(a);
-        try self.push(b);
-    }
-
-    // TODO do this with out the popping
-    pub fn swap(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        try self.push(a);
-        try self.push(b);
-    }
-
-    pub fn cell(self: *Self) Error!void {
-        try self.push(@sizeOf(Cell));
+        try self.push(if (a == b) forth_true else forth_false);
     }
 
     pub fn plus(self: *Self) Error!void {
@@ -807,14 +909,42 @@ pub const VM = struct {
         try self.push(a *% b);
     }
 
+    pub fn cell(self: *Self) Error!void {
+        try self.push(@sizeOf(Cell));
+    }
+
+    pub fn number(self: *Self) Error!void {
+        const len = try self.pop();
+        const addr = try self.pop();
+        try self.push(try parseNumber(stringAt(addr, len), self.base.*));
+    }
+
+    //;
+
+    pub fn showStack(self: *Self) Error!void {
+        self.debugPrintStack();
+    }
+
     pub fn type_(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
         std.debug.print("{}", .{stringAt(addr, len)});
     }
 
-    pub fn cr(self: *Self) Error!void {
-        std.debug.print("\n", .{});
+    pub fn key(self: *Self) Error!void {
+        const ch = try self.readNextChar();
+        try self.push(ch);
+    }
+
+    pub fn char(self: *Self) Error!void {
+        try self.word();
+        const len = try self.pop();
+        const addr = try self.pop();
+        try self.push(stringAt(addr, len)[0]);
+    }
+
+    pub fn emit(self: *Self) Error!void {
+        std.debug.print("{c}", .{@intCast(u8, (try self.pop()) & 0xff)});
     }
 };
 
