@@ -188,7 +188,7 @@ pub const VM = struct {
         try self.createBuiltin(":", 0, &colon);
         try self.createBuiltin(";", word_immediate_flag, &semicolon);
         try self.createBuiltin("immediate", word_immediate_flag, &immediate);
-        try self.createBuiltin("hidden", word_immediate_flag, &hidden);
+        try self.createBuiltin("hidden", 0, &hidden);
         try self.createBuiltin(">cfa", 0, &cfa_);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
@@ -755,11 +755,11 @@ pub const VM = struct {
 
     pub fn colon(self: *Self) Error!void {
         try self.define();
-        try self.push(self.docol_address);
-        try self.comma();
         try Self.latest(self);
         try self.fetch();
         try self.hidden();
+        try self.push(self.docol_address);
+        try self.comma();
         try self.rBracket();
     }
 

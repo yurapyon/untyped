@@ -96,25 +96,25 @@
 : allot
   here @ + here ! ;
 
-define last-create 0 ,
-
 : create
   define
-  ['] docol , ['] lit ,
-  here @ 3 cells + ,
-  here @ ['] last-create !
-  ['] exit ,
+  ['] docol ,
+  ['] lit , here @ 2 cells + ,
   ['] exit , ;
 
-: does>,interpret
-  ['] last-create @ ! ;
+: does>,redirect-latest \ ( code-addr -- )
+  latest @ >cfa 3 cells + ! ;
 
 : does>
-  ['] lit ,
-  here @ 3 cells + ,
-  ['] does>,interpret ,
-  ['] exit ,
-  ['] docol ,
+  state @ if
+    ['] lit , here @ 3 cells + ,
+    ['] does>,redirect-latest ,
+    ['] exit ,
+  else
+    here @ does>,redirect-latest
+    latest @ hidden
+    ]
+  then
   ; immediate
 
 : constant
@@ -129,6 +129,11 @@ wowo .s
 
 
 ' wowo >body dup @ .s
+
+10 create something ,
+does> @ 2 + ;
+
+something .s
 
 bye
 
