@@ -135,7 +135,6 @@ latest !
 : backslash 92 ;
 
 : cr newline emit ;
-: space bl emit ;
 
 \ ;
 
@@ -239,35 +238,28 @@ latest !
 : align ( -- )
   here @ aligned here ! ;
 
-: s" ( c: ( -- ) i: ( -- addr len ) )
+: read-string-into-memory ( start-addr -- end-addr )
+  begin
+    key
+    dup [char] " <>
+  while
+    over c!
+    1+
+  repeat
+  drop ;
+
+: s" ( ( c: -- ) ( i: -- addr len ) )
   state @ if
     ['] litstring ,
-    here @
-    0 ,
-    begin
-      key
-      dup [char] " <>
-    while
-      c,
-    repeat
-    drop
-    dup here @ swap -
-    cell -
+    here @ 0 ,
+    here @ read-string-into-memory
+    here @ -
+    dup allot align
     swap !
-    align
   else
     here @
-    begin
-      key
-      dup [char] " <>
-    while
-      over c!
-      1+
-    repeat
-    drop
+    here @ read-string-into-memory
     here @ -
-    here @
-    swap
   then
   ; immediate
 
@@ -332,6 +324,7 @@ latest !
   ['] lit , , ; immediate
 
 : space bl emit ;
+
 : spaces ( n -- )
   0 ?do space loop ;
 
@@ -361,7 +354,7 @@ create u.buffer 8 cell * allot
   dup uwidth dup >r
   begin                   ( u uwidth-acc )
     1- >r
-    chop-digit digit>char ( ufirst lastchar )
+    chop-digit digit>char ( urest lastchar )
     u.buffer r@ + c!
     r>
   dup 0= until
@@ -376,15 +369,10 @@ create u.buffer 8 cell * allot
   depth    u.
   [char] > emit
   space
-  sp@ cell -
-  begin
-    dup s0 >=
-  while
-    dup @ u.
-    space
-    cell -
-  repeat
-  drop ;
+  \ todo make +loop and factor
+  sp@ s0 - cell / 0 ?do
+    s0 i cells + @ u. space
+  loop ;
 
 : pad-left ( u width -- )
   swap uwidth - spaces ;
@@ -393,16 +381,14 @@ create u.buffer 8 cell * allot
   2dup pad-left drop u. ;
 
 : .r ( n width -- )
-  over 0< >r
-  r@ if
-    swap negate swap
-    1-
-  then
-  2dup pad-left drop
-  r> if
+  over 0< if
+    1- swap negate swap
+    2dup pad-left drop
     [char] - emit
-  then
-  u. ;
+    u.
+  else
+    u.r
+  then ;
 
 : . 0 .r space ;
 : u. u. space ;
