@@ -7,18 +7,19 @@ const ArrayList = std.ArrayList;
 // TODO
 //   float stack
 //   limit word len (go with 64 i guess?)
+//     think its limited to 255 because len is a byte
 //   instead of line_buf_len should it be a ptr to the top
+//   key?
+//   , and c, can be written in forth
+//   find just returns t/f
+//   change stle of line comments ?
+//     \ is annoying, # would work
 
 // sp points to 1 beyond the top of the stack
 //   should i keep it this way?
 // rsp is the same
 
-// self.base.* needs to be <= 255 because of zig.fmt.parseInt
-
 // state == forth_true in compilation state
-
-// TODO , and c, can be written in forth
-// find just returns t/f
 
 pub const VM = struct {
     const Self = @This();
@@ -28,7 +29,6 @@ pub const VM = struct {
         StackOverflow,
         ReturnStackUnderflow,
         ReturnStackOverflow,
-        AddressOutOfBounds,
         WordTooLong,
         NoInputBuffer,
         WordNotFound,
@@ -59,6 +59,8 @@ pub const VM = struct {
     const mem_size = 4 * 1024 * 1024;
     const stack_size = 192 * @sizeOf(Cell);
     const rstack_size = 64 * @sizeOf(Cell);
+    // TODO this determines dictionary start
+    //        has to be cell aligned
     const line_buf_size = 128;
 
     const latest_pos = 0 * @sizeOf(Cell);
@@ -132,6 +134,7 @@ pub const VM = struct {
         ret.rsp.* = @ptrToInt(ret.rstack);
         ret.line_buf_len.* = 0;
 
+        // TODO make all this catch unreachable
         try ret.initBuiltins();
         try ret.readInput(baseLib);
         try ret.quit();
@@ -161,10 +164,14 @@ pub const VM = struct {
         try self.createBuiltin("base", 0, &base);
         try self.createBuiltin("s0", 0, &s0);
         try self.createBuiltin("sp", 0, &sp);
+        try self.createBuiltin("sp@", 0, &spFetch);
+        try self.createBuiltin("sp!", 0, &spStore);
         try self.createBuiltin("rs0", 0, &rs0);
         try self.createBuiltin("rsp", 0, &rsp);
+        // TODO rsp fetch/store
 
         try self.createBuiltin("dup", 0, &dup);
+        try self.createBuiltin("?dup", 0, &dupMaybe);
         try self.createBuiltin("drop", 0, &drop);
         try self.createBuiltin("swap", 0, &swap);
         try self.createBuiltin("over", 0, &over);
@@ -178,6 +185,7 @@ pub const VM = struct {
         try self.createBuiltin(">R", 0, &toR);
         try self.createBuiltin("R>", 0, &fromR);
         try self.createBuiltin("R@", 0, &rFetch);
+        // TODO 2r> 2>r
 
         try self.createBuiltin("docol", 0, &docol);
         try self.createBuiltin("exit", 0, &exit);
@@ -241,6 +249,8 @@ pub const VM = struct {
         try self.createBuiltin("allocate", 0, &allocate);
         try self.createBuiltin("free", 0, &free);
         // TODO resize
+        try self.createBuiltin("cmove>", 0, &cmoveUp);
+        try self.createBuiltin("cmove<", 0, &cmoveDown);
     }
 
     //;
@@ -256,7 +266,7 @@ pub const VM = struct {
 
     pub fn push(self: *Self, val: Cell) Error!void {
         // TODO dont do alignment math here
-        //        just let misalignment be caught by inttoptr
+        //        sp is always going to be aligned
         if (self.sp.* >= @ptrToInt(self.stack) + stack_size - @sizeOf(Cell) - 1) {
             return error.StackOverflow;
         }
@@ -275,7 +285,7 @@ pub const VM = struct {
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
         // TODO dont do alignment math here
-        //        just let misalignment be caught by inttoptr
+        //        rsp is always going to be aligned
         if (self.rsp.* >= @ptrToInt(self.rstack) + rstack_size - @sizeOf(Cell) - 1) {
             return error.StackOverflow;
         }
@@ -302,8 +312,11 @@ pub const VM = struct {
 
     //;
 
-    // TODO for read/write cell
-    //        put alignment error in VM.Error ?
+    // TODO
+    // for read/write cell
+    //   put alignment error in VM.Error ?
+    //   probably yeah,
+    //   instead of getting segfaults for things accidentally left on rstack, will be alignment error
 
     pub fn checkedReadCell(self: *Self, addr: Cell) Error!Cell {
         return @intToPtr(*const Cell, addr).*;
@@ -409,6 +422,7 @@ pub const VM = struct {
     }
 
     // TODO rename/refactor somehow
+    // slice at
     pub fn stringAt(addr: Cell, len: Cell) []u8 {
         var str: []u8 = undefined;
         str.ptr = @intToPtr([*]u8, addr);
@@ -446,6 +460,11 @@ pub const VM = struct {
         }
 
         return if (is_negative) 0 -% acc else acc;
+    }
+
+    pub fn pushString(self: *Self, str: []const u8) Error!void {
+        try self.push(@ptrToInt(str.ptr));
+        try self.push(str.len);
     }
 
     //;
@@ -541,8 +560,6 @@ pub const VM = struct {
         return @intToPtr(*const Builtin, fn_ptr);
     }
 
-    // if word not found, will return 0
-    // TODO return ?Cell or error not found
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
         const name = stringAt(addr, len);
 
@@ -567,7 +584,12 @@ pub const VM = struct {
                 break;
             }
         }
-        return check;
+
+        if (check == 0) {
+            return error.WordNotFound;
+        } else {
+            return check;
+        }
     }
 
     // builtins
@@ -621,6 +643,15 @@ pub const VM = struct {
         try self.push(@ptrToInt(self.sp));
     }
 
+    pub fn spFetch(self: *Self) Error!void {
+        try self.push(self.sp.*);
+    }
+
+    pub fn spStore(self: *Self) Error!void {
+        const val = try self.pop();
+        self.sp.* = val;
+    }
+
     pub fn rs0(self: *Self) Error!void {
         try self.push(@ptrToInt(self.rstack));
     }
@@ -635,6 +666,14 @@ pub const VM = struct {
         const a = try self.pop();
         try self.push(a);
         try self.push(a);
+    }
+
+    pub fn dupMaybe(self: *Self) Error!void {
+        const a = try self.pop();
+        try self.push(a);
+        if (a != forth_false) {
+            try self.push(a);
+        }
     }
 
     pub fn drop(self: *Self) Error!void {
@@ -719,7 +758,6 @@ pub const VM = struct {
     }
 
     pub fn rFetch(self: *Self) Error!void {
-        // TODO use stack indexing
         try self.push(try self.checkedReadCell(self.rsp.* - @sizeOf(Cell)));
     }
 
@@ -744,8 +782,10 @@ pub const VM = struct {
         }
     }
 
-    // TODO word doesnt really work when interpreting
-    //      the next word you read after calling word messes with the line_buf
+    // note:
+    //   the next word you read after calling 'word' messes with the line_buf
+    //   word doesnt really work ehn interpreting
+    //   could maybe be fixed by double buffering
     pub fn word(self: *Self) Error!void {
         const len = try self.readNextWord();
         try self.push(@ptrToInt(self.line_buf));
@@ -755,17 +795,21 @@ pub const VM = struct {
     pub fn find(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        const ret = try self.findWord(addr, len);
-        if (ret == 0) {
-            try self.push(addr);
-            try self.push(find_info_not_found);
-        } else {
-            const flags = wordHeaderFlags(ret);
-            const is_immediate = (flags & word_immediate_flag) != 0;
+        const ret = self.findWord(addr, len) catch |err| {
+            switch (err) {
+                error.WordNotFound => {
+                    try self.push(addr);
+                    try self.push(find_info_not_found);
+                    return;
+                },
+                else => return err,
+            }
+        };
 
-            try self.push(ret);
-            try self.push(if (is_immediate) find_info_immediate else find_info_not_immediate);
-        }
+        const flags = wordHeaderFlags(ret);
+        const is_immediate = (flags & word_immediate_flag) != 0;
+        try self.push(ret);
+        try self.push(if (is_immediate) find_info_immediate else find_info_not_immediate);
     }
 
     pub fn fetch(self: *Self) Error!void {
@@ -805,18 +849,14 @@ pub const VM = struct {
     pub fn tick(self: *Self) Error!void {
         try self.word();
         try self.find();
-        // TODO handle not found
-        _ = try self.pop();
+        if ((try self.pop()) == find_info_not_found) {
+            return error.WordNotFound;
+        }
         try self.cfa_();
     }
 
     pub fn bracketTick(self: *Self) Error!void {
-        try self.word();
-        try self.find();
-        // TODO handle not found
-        _ = try self.pop();
-        try self.cfa_();
-
+        try self.tick();
         try self.push(self.lit_address);
         try self.comma();
         try self.comma();
@@ -875,7 +915,7 @@ pub const VM = struct {
         self.next = self.quit_address;
         self.exec_cfa = cfa;
         self.exec_cmd = cfa;
-        while (true) {
+        while (!self.should_stop_interpreting) {
             if (self.exec_cfa == self.quit_address) break;
             if ((try self.checkedReadCell(self.exec_cmd)) == builtin_fn_id) {
                 const fn_ptr = builtinFnPtr(self.exec_cmd);
@@ -916,18 +956,14 @@ pub const VM = struct {
                 const is_immediate = (flags & word_immediate_flag) != 0;
                 const cfa = wordHeaderCodeFieldAddress(addr);
                 if (is_compiling and !is_immediate) {
-                    // note:
-                    //   'comilation semantics' are here
-                    //   so if i add postpone, it has something to do with this
-                    //   could make flags more than just 'immediate or not'
                     try self.push(cfa);
                     try self.comma();
                 } else {
                     try self.executeCfa(cfa);
                 }
             } else {
-                // TODO just uses line_buf directly
-                //        is this ok?
+                // note: assumes self.word() reads into line_buf
+                //   and that that isnt changed by the time you get here
                 var str: []const u8 = undefined;
                 str.ptr = self.line_buf;
                 str.len = self.line_buf_len.*;
@@ -1150,5 +1186,31 @@ pub const VM = struct {
         mem.ptr = mem_ptr;
         mem.len = size_ptr.*;
         self.allocator.free(mem);
+    }
+
+    pub fn cmoveUp(self: *Self) Error!void {
+        const dest = @intToPtr([*]u8, try self.pop());
+        const len = try self.pop();
+        const src = @intToPtr([*]u8, try self.pop());
+        {
+            @setRuntimeSafety(false);
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                dest[i] = src[i];
+            }
+        }
+    }
+
+    pub fn cmoveDown(self: *Self) Error!void {
+        const dest = @intToPtr([*]u8, try self.pop());
+        const len = try self.pop();
+        const src = @intToPtr([*]u8, try self.pop());
+        {
+            @setRuntimeSafety(false);
+            var i: usize = len - 1;
+            while (i >= len) : (i -= 1) {
+                dest[i] = src[i];
+            }
+        }
     }
 };

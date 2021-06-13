@@ -30,6 +30,7 @@ latest !
 
 : 2dup over over ;
 : 2drop drop drop ;
+: 2over 3 pick 3 pick ;
 : 3dup 2 pick 2 pick 2 pick ;
 : 3drop drop 2drop ;
 : flip swap rot ;
@@ -131,14 +132,16 @@ latest !
 
 : newline 10 ;
 : bl 32 ;
+: backslash 92 ;
 
 : cr newline emit ;
 : space bl emit ;
 
 \ ;
 
+\ not a tailcalling recurse
 : recurse
-  latest @ >cfa cell + ,
+  latest @ >cfa ,
   ; immediate
 
 \ todo check this works
@@ -150,6 +153,14 @@ latest !
 
 : allot
   here @ + here ! ;
+
+\ todo check this works
+: move ( src n dest )
+  3dup nip < if
+    cmove>
+  else
+    cmove<
+  then ;
 
 : mem-end
   mem mem-size + ;
@@ -272,8 +283,7 @@ latest !
   ['] r> ,
   ['] r> ,
   ['] 2dup ,
-  ['] = ,
-  ['] 0= ,
+  ['] > ,
   ['] -rot ,
   ['] >r ,
   ['] >r ,
@@ -296,6 +306,8 @@ latest !
   [compile] unloop
   ; immediate
 
+\ todo +loop -loop
+
 : i
   ['] lit , 1 ,
   ['] rstack.at ,
@@ -313,6 +325,90 @@ latest !
   ['] rstack.at ,
   ['] @ ,
   ; immediate
+
+\ ===
+
+: literal
+  ['] lit , , ; immediate
+
+: space bl emit ;
+: spaces ( n -- )
+  0 ?do space loop ;
+
+: digit>char
+  dup 10 < if
+    [char] 0
+  else
+    10 - [char] a
+  then
+  + ;
+
+: uwidth ( u -- width )
+  1 swap ( ct u )
+  begin
+    base @ / dup
+  while
+    swap 1+ swap
+  repeat
+  drop ;
+
+: chop-digit ( u -- u-lastdigit lastdigit )
+  base @ /mod swap ;
+
+create u.buffer 8 cell * allot
+
+: u. ( u -- )
+  dup uwidth dup >r
+  begin                   ( u uwidth-acc )
+    1- >r
+    chop-digit digit>char ( ufirst lastchar )
+    u.buffer r@ + c!
+    r>
+  dup 0= until
+  2drop
+  u.buffer r> type ;
+
+: depth
+  sp@ s0 - cell / ;
+
+: .s    ( -- )
+  [char] < emit
+  depth    u.
+  [char] > emit
+  space
+  sp@ cell -
+  begin
+    dup s0 >=
+  while
+    dup @ u.
+    space
+    cell -
+  repeat
+  drop ;
+
+: pad-left ( u width -- )
+  swap uwidth - spaces ;
+
+: u.r ( u width -- )
+  2dup pad-left drop u. ;
+
+: .r ( n width -- )
+  over 0< >r
+  r@ if
+    swap negate swap
+    1-
+  then
+  2dup pad-left drop
+  r> if
+    [char] - emit
+  then
+  u. ;
+
+: . 0 .r space ;
+: u. u. space ;
+: ? @ . ;
+
+\ ===
 
 (
 
