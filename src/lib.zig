@@ -14,6 +14,7 @@ const ArrayList = std.ArrayList;
 //   find just returns t/f
 //   change stle of line comments ?
 //     \ is annoying, # would work
+//   have a way to notify on overwrite name
 
 // sp points to 1 beyond the top of the stack
 //   should i keep it this way?
@@ -490,6 +491,7 @@ pub const VM = struct {
         flags: u8,
     ) Error!void {
         // TODO check word len isnt too long?
+        self.here.* = alignAddr(Cell, self.here.*);
         const new_latest = self.here.*;
         try self.push(self.latest.*);
         try self.comma();

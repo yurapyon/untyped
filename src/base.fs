@@ -238,6 +238,34 @@ latest !
 : align ( -- )
   here @ aligned here ! ;
 
+\ ==
+
+: case
+  0
+  ; immediate
+
+: of
+  ['] over ,
+  ['] = ,
+  [compile] if
+  ['] drop ,
+  ; immediate
+
+: endof
+  [compile] else
+  ; immediate
+
+: endcase
+  ['] drop ,
+  begin
+    ?dup
+  while
+    [compile] then
+  repeat
+  ; immediate
+
+\ ===
+
 : read-string-into-memory ( start-addr -- end-addr )
   begin
     key
@@ -259,6 +287,80 @@ latest !
   else
     here @
     here @ read-string-into-memory
+    here @ -
+  then
+  ; immediate
+
+: ." ( -- )
+  [compile] s"
+  state @ if
+    ['] type ,
+  else
+    type
+  then ; immediate
+
+\ TODO rename this
+: h>u ( hex-char -- u )
+  dup [char] 9 [char] 0 within if [char] 0 -      else
+  dup [char] F [char] A within if [char] A - 10 + else
+  dup [char] f [char] a within if [char] a - 10 + else
+    \ TODO error
+    drop 0
+  then then then ;
+
+: read-byte ( -- byte )
+  key key
+  h>u swap h>u 16 * + ;
+
+: read-escaped-string-into-memory ( start-addr -- end-addr )
+  begin
+    key
+    dup [char] " <>
+  while
+    dup backslash = if
+      drop
+      key
+      \ TODO
+      \ [char] m of 13 10
+      \ \n does cr lf on windows
+      \   newline is cr lf ? how
+      \   get rid of 'newline' and have linefeed ?
+      case
+      [char] "  of [char] "  endof
+      [char] n  of newline   endof
+      backslash of backslash endof
+      [char] x  of read-byte endof
+      [char] a  of 7 endof
+      [char] b  of 8 endof
+      [char] e  of 27 endof
+      [char] f  of 12 endof
+      [char] l  of 10 endof
+      [char] q  of 34 endof
+      [char] r  of 13 endof
+      [char] t  of 9 endof
+      [char] v  of 11 endof
+      [char] z  of 0 endof
+        \ TODO error
+        s" invalid string escape" type cr
+        bye
+      endcase
+    then
+    over c!
+    1+
+  repeat
+  drop ;
+
+: s\" ( ( c: -- ) ( i: -- addr len ) )
+  state @ if
+    ['] litstring ,
+    here @ 0 ,
+    here @ read-escaped-string-into-memory
+    here @ -
+    dup allot align
+    swap !
+  else
+    here @
+    here @ read-escaped-string-into-memory
     here @ -
   then
   ; immediate
@@ -364,26 +466,43 @@ create u.buffer 8 cell * allot
 : depth
   sp@ s0 - cell / ;
 
-: .s    ( -- )
+: .s ( -- )
   [char] < emit
   depth    u.
   [char] > emit
   space
-  \ todo make +loop and factor
-  sp@ s0 - cell / 0 ?do
-    s0 i cells + @ u. space
-  loop ;
+  sp@ s0
+  begin
+    2dup >
+  while
+    dup @ u. space
+    cell +
+  repeat
+  2drop ;
 
-: pad-left ( u width -- )
-  swap uwidth - spaces ;
+: repeat-char ( ct char -- )
+  swap 0 ( char ct acc )
+  begin
+    2dup >
+  while
+    2 pick emit
+    1+
+  repeat
+  3drop ;
+
+: pad-left ( u width char -- )
+  >r swap uwidth - r> repeat-char ;
 
 : u.r ( u width -- )
-  2dup pad-left drop u. ;
+  2dup bl pad-left drop u. ;
+
+: u.0 ( u width -- )
+  2dup [char] 0 pad-left drop u. ;
 
 : .r ( n width -- )
   over 0< if
     1- swap negate swap
-    2dup pad-left drop
+    2dup bl pad-left drop
     [char] - emit
     u.
   else
@@ -396,7 +515,128 @@ create u.buffer 8 cell * allot
 
 \ ===
 
+: cfa> ( cfa -- base-addr/cfa t/f )
+  latest @
+  begin
+    ?dup
+  while
+    ( cfa latest )
+    2dup > if
+      nip true
+      exit
+    then
+    @
+  repeat
+  false ;
+
+: printable? ( ch -- t/f )
+  126 32 within ;
+
+: dump ( addr len -- )
+  base @ >r
+  hex
+  over + swap
+  ( end-addr start-addr )
+  begin
+    2dup >
+  while
+    dup 16 u.r
+    16 0 ?do
+      dup i + c@ 2 u.0 space
+    loop
+    16 0 ?do
+      dup i + c@
+      dup printable? 0= if
+        drop [char] .
+      then
+      emit
+    loop
+    cr
+    16 +
+  repeat
+  r> base ! ;
+
+\ ===
+
+: >name
+  cell + 2 + dup 1- c@ ;
+
+: >flags
+  cell + c@ ;
+
+: >next ( addr -- next-addr )
+  here @ latest @
+  begin
+    2 pick over <>
+  while
+    nip dup @
+  repeat
+  drop nip ;
+
+: hidden?
+  >flags flag,hidden and ;
+
+: immediate?
+  >flags flag,immediate and ;
+
+: words
+  latest @
+  begin
+    ?dup
+  while
+    dup >name type
+    dup hidden? if ." (h)" then
+    dup immediate? if ." (i)" then
+    space
+    @
+  repeat
+  cr ;
+
+: in-memory?
+  mem mem-size + mem within ;
+
+: see
+  word find drop
+  dup >next swap
+  dup [char] ( emit >name type [char] ) emit space
+  >cfa
+  begin
+    2dup >
+  while
+    dup @ case
+    ['] lit of ." lit(" cell + dup @ 0 .r ." ) " endof
+    ['] 0branch of ." 0branch(" cell + dup @ 0 .r ." ) " endof
+    ['] branch of ." branch(" cell + dup @ 0 .r ." ) " endof
+    ['] litstring of
+      [char] S emit
+      [char] " emit
+      cell + dup @
+      swap cell + swap 2dup type
+      + aligned
+      cell -
+      [char] " emit
+      space
+    endof
+    dup dup in-memory? 0= if
+      ." data(" 0 .r ." ) "
+    else
+      cfa> drop >name type space
+    then
+    endcase
+    cell +
+  repeat
+  2drop ;
+
+\ ===
+
 (
+
+create hello 5 c,
+: hello2 5 ;
+hello2
+
+' does> cfa> drop 13 dump
+
 
  : looper
    5 0 ?do
