@@ -26,8 +26,12 @@ pub const VM = struct {
     const Self = @This();
 
     pub const Error = error{
+        // TODO
+        // Misalignment
+        // TODO specialize these errors per stack
         StackUnderflow,
         StackOverflow,
+
         ReturnStackUnderflow,
         ReturnStackOverflow,
         WordTooLong,
@@ -40,9 +44,11 @@ pub const VM = struct {
     pub const baseLib = @embedFile("base.fs");
 
     // TODO make sure @sizeOf(usize) == @sizeOf(Cell)
+    //                @sizeOf(Float) <= @sizeOf(Cell)
     pub const Cell = u64;
     pub const SCell = i64;
     pub const Builtin = fn (self: *Self) Error!void;
+    pub const Float = f64;
 
     pub const forth_false: Cell = 0;
     pub const forth_true = ~forth_false;
@@ -60,6 +66,7 @@ pub const VM = struct {
     const mem_size = 4 * 1024 * 1024;
     const stack_size = 192 * @sizeOf(Cell);
     const rstack_size = 64 * @sizeOf(Cell);
+    const fstack_size = 64 * @sizeOf(Float);
     // TODO this determines dictionary start
     //        has to be cell aligned
     const line_buf_size = 128;
@@ -70,11 +77,18 @@ pub const VM = struct {
     const state_pos = 3 * @sizeOf(Cell);
     const sp_pos = 4 * @sizeOf(Cell);
     const rsp_pos = 5 * @sizeOf(Cell);
-    const line_buf_len_pos = 6 * @sizeOf(Cell);
-    const stack_start = 7 * @sizeOf(Cell);
+    const fsp_pos = 6 * @sizeOf(Cell);
+    const line_buf_len_pos = 7 * @sizeOf(Cell);
+    const stack_start = 8 * @sizeOf(Cell);
     const rstack_start = stack_start + stack_size;
-    const line_buf_start = rstack_start + rstack_size;
+    const fstack_start = rstack_start + rstack_size;
+    const line_buf_start = fstack_start + fstack_size;
     const dictionary_start = line_buf_start + line_buf_size;
+
+    pub const ParseNumberResult = union(enum) {
+        Float: Float,
+        Cell: Cell,
+    };
 
     allocator: *Allocator,
     last_input: ?[]u8,
@@ -86,8 +100,9 @@ pub const VM = struct {
     exec_cfa: Cell,
     exec_cmd: Cell,
 
-    quit_address: Cell,
     lit_address: Cell,
+    litFloat_address: Cell,
+    quit_address: Cell,
     should_stop_interpreting: bool,
 
     mem: []u8,
@@ -97,9 +112,11 @@ pub const VM = struct {
     state: *Cell,
     sp: *Cell,
     rsp: *Cell,
+    fsp: *Cell,
     line_buf_len: *Cell,
     stack: [*]Cell,
     rstack: [*]Cell,
+    fstack: [*]Float,
     line_buf: [*]u8,
     dictionary: [*]u8,
 
@@ -120,9 +137,11 @@ pub const VM = struct {
         ret.state = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[state_pos]));
         ret.sp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[sp_pos]));
         ret.rsp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[rsp_pos]));
+        ret.fsp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[fsp_pos]));
         ret.line_buf_len = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[line_buf_len_pos]));
         ret.stack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[stack_start]));
         ret.rstack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[rstack_start]));
+        ret.fstack = @ptrCast([*]Float, @alignCast(@alignOf(Cell), &ret.mem[fstack_start]));
         ret.line_buf = @ptrCast([*]u8, &ret.mem[line_buf_start]);
         ret.dictionary = @ptrCast([*]u8, &ret.mem[dictionary_start]);
 
@@ -133,6 +152,7 @@ pub const VM = struct {
         ret.state.* = forth_false;
         ret.sp.* = @ptrToInt(ret.stack);
         ret.rsp.* = @ptrToInt(ret.rstack);
+        ret.fsp.* = @ptrToInt(ret.fstack);
         ret.line_buf_len.* = 0;
 
         // TODO make all this catch unreachable
@@ -153,6 +173,8 @@ pub const VM = struct {
     fn initBuiltins(self: *Self) Error!void {
         try self.createBuiltin("lit", 0, &lit);
         self.lit_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("litfloat", 0, &litFloat);
+        self.litFloat_address = wordHeaderCodeFieldAddress(self.latest.*);
         try self.createBuiltin("quit", 0, &quit);
         self.quit_address = wordHeaderCodeFieldAddress(self.latest.*);
 
@@ -169,7 +191,8 @@ pub const VM = struct {
         try self.createBuiltin("sp!", 0, &spStore);
         try self.createBuiltin("rs0", 0, &rs0);
         try self.createBuiltin("rsp", 0, &rsp);
-        // TODO rsp fetch/store
+        try self.createBuiltin("fs0", 0, &fs0);
+        try self.createBuiltin("fsp", 0, &fsp);
 
         try self.createBuiltin("dup", 0, &dup);
         try self.createBuiltin("?dup", 0, &dupMaybe);
@@ -237,11 +260,11 @@ pub const VM = struct {
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
-        try self.createBuiltin("number", 0, &number);
+        // try self.createBuiltin("number", 0, &number);
 
         try self.createBuiltin(".s", 0, &showStack);
 
-        try self.createBuiltin("litstring", 0, &litstring);
+        try self.createBuiltin("litstring", 0, &litString);
         try self.createBuiltin("type", 0, &type_);
         try self.createBuiltin("key", 0, &key);
         try self.createBuiltin("char", 0, &char);
@@ -252,6 +275,8 @@ pub const VM = struct {
         // TODO resize
         try self.createBuiltin("cmove>", 0, &cmoveUp);
         try self.createBuiltin("cmove<", 0, &cmoveDown);
+
+        try self.createBuiltin("f.", 0, &printFloat);
     }
 
     //;
@@ -266,9 +291,7 @@ pub const VM = struct {
     }
 
     pub fn push(self: *Self, val: Cell) Error!void {
-        // TODO dont do alignment math here
-        //        sp is always going to be aligned
-        if (self.sp.* >= @ptrToInt(self.stack) + stack_size - @sizeOf(Cell) - 1) {
+        if (self.sp.* >= @ptrToInt(self.stack) + stack_size) {
             return error.StackOverflow;
         }
         @intToPtr(*Cell, self.sp.*).* = val;
@@ -285,13 +308,28 @@ pub const VM = struct {
     }
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
-        // TODO dont do alignment math here
-        //        rsp is always going to be aligned
-        if (self.rsp.* >= @ptrToInt(self.rstack) + rstack_size - @sizeOf(Cell) - 1) {
+        if (self.rsp.* >= @ptrToInt(self.rstack) + rstack_size) {
             return error.StackOverflow;
         }
         @intToPtr(*Cell, self.rsp.*).* = val;
         self.rsp.* += @sizeOf(Cell);
+    }
+
+    pub fn fpop(self: *Self) Error!Float {
+        if (self.fsp.* <= @ptrToInt(self.fstack)) {
+            return error.StackUnderflow;
+        }
+        self.fsp.* -= @sizeOf(Float);
+        const ret = @intToPtr(*const Float, self.fsp.*).*;
+        return ret;
+    }
+
+    pub fn fpush(self: *Self, val: Float) Error!void {
+        if (self.fsp.* >= @ptrToInt(self.fstack) + fstack_size) {
+            return error.StackOverflow;
+        }
+        @intToPtr(*Float, self.fsp.*).* = val;
+        self.fsp.* += @sizeOf(Float);
     }
 
     //;
@@ -436,10 +474,35 @@ pub const VM = struct {
         return if (off_aligned == @alignOf(T)) addr else addr + off_aligned;
     }
 
-    pub fn parseNumber(str: []const u8, base_: Cell) Error!Cell {
+    pub fn parseNumber(str: []const u8, base_: Cell) Error!ParseNumberResult {
         var is_negative = false;
         var acc: Cell = 0;
         var read_at: usize = 0;
+
+        if (str[str.len - 1] == 'f') {
+            // dont allow f
+            if (str.len == 1) {
+                return error.InvalidNumber;
+            }
+            // only allow 0-9 - .
+            for (str[0..(str.len - 1)]) |ch| {
+                switch (ch) {
+                    '0'...'9', '.', '+', '-' => {},
+                    else => return error.InvalidNumber,
+                }
+            }
+            // dont allow .f +f -f
+            if (str.len == 2 and
+                (str[0] == '.' or str[0] == '+' or str[0] == '-'))
+            {
+                return error.InvalidNumber;
+            }
+
+            const fl = std.fmt.parseFloat(Float, str[0..(str.len - 1)]) catch |_| {
+                return error.InvalidNumber;
+            };
+            return ParseNumberResult{ .Float = fl };
+        }
 
         if (str[0] == '-') {
             is_negative = true;
@@ -460,7 +523,7 @@ pub const VM = struct {
             acc = acc * base_ + digit;
         }
 
-        return if (is_negative) 0 -% acc else acc;
+        return ParseNumberResult{ .Cell = if (is_negative) 0 -% acc else acc };
     }
 
     pub fn pushString(self: *Self, str: []const u8) Error!void {
@@ -660,6 +723,14 @@ pub const VM = struct {
 
     pub fn rsp(self: *Self) Error!void {
         try self.push(@ptrToInt(self.rsp));
+    }
+
+    pub fn fs0(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.fstack));
+    }
+
+    pub fn fsp(self: *Self) Error!void {
+        try self.push(@ptrToInt(self.fsp));
     }
 
     //;
@@ -972,12 +1043,25 @@ pub const VM = struct {
                 const maybe_num = parseNumber(str, self.base.*) catch null;
                 if (maybe_num) |num| {
                     if (is_compiling) {
-                        try self.push(self.lit_address);
-                        try self.comma();
-                        try self.push(num);
-                        try self.comma();
+                        switch (num) {
+                            .Cell => |c| {
+                                try self.push(self.lit_address);
+                                try self.comma();
+                                try self.push(c);
+                                try self.comma();
+                            },
+                            .Float => |f| {
+                                try self.push(self.litFloat_address);
+                                try self.comma();
+                                try self.push(floatToCell(f));
+                                try self.comma();
+                            },
+                        }
                     } else {
-                        try self.push(num);
+                        switch (num) {
+                            .Cell => |c| try self.push(c),
+                            .Float => |f| try self.fpush(f),
+                        }
                     }
                 } else {
                     std.debug.print("word not found: '{}'\n", .{str});
@@ -1109,11 +1193,12 @@ pub const VM = struct {
     }
 
     // TODO do this according to forth specs
-    pub fn number(self: *Self) Error!void {
-        const len = try self.pop();
-        const addr = try self.pop();
-        try self.push(try parseNumber(stringAt(addr, len), self.base.*));
-    }
+    //      handle floats
+    // pub fn number(self: *Self) Error!void {
+    // const len = try self.pop();
+    // const addr = try self.pop();
+    // try self.push(try parseNumber(stringAt(addr, len), self.base.*));
+    // }
 
     //;
 
@@ -1123,7 +1208,7 @@ pub const VM = struct {
 
     //;
 
-    pub fn litstring(self: *Self) Error!void {
+    pub fn litString(self: *Self) Error!void {
         const len = try self.checkedReadCell(self.next);
         self.next += @sizeOf(Cell);
         try self.push(self.next);
@@ -1214,5 +1299,30 @@ pub const VM = struct {
                 dest[i] = src[i];
             }
         }
+    }
+
+    // ===
+
+    pub fn floatToCell(f: Float) Cell {
+        // TODO handle if @sizeOf(Float) != @sizeOf(Cell)
+        return @bitCast(Cell, f);
+    }
+
+    pub fn cellToFloat(c: Cell) Float {
+        return @bitCast(Float, c);
+    }
+
+    pub fn litFloat(self: *Self) Error!void {
+        try self.fpush(cellToFloat(try self.checkedReadCell(self.next)));
+        self.next += @sizeOf(Cell);
+    }
+
+    pub fn printFloat(self: *Self) Error!void {
+        const float = try self.fpop();
+        std.debug.print("{d}", .{float});
+    }
+
+    pub fn float(self: *Self) Error!void {
+        try self.push(@sizeOf(Float));
     }
 };

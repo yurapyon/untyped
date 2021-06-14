@@ -427,8 +427,18 @@ latest !
 
 : space bl emit ;
 
+: repeat-char ( ct char -- )
+  swap 0 ( char ct acc )
+  begin
+    2dup >
+  while
+    2 pick emit
+    1+
+  repeat
+  3drop ;
+
 : spaces ( n -- )
-  0 ?do space loop ;
+  space repeat-char ;
 
 : digit>char
   dup 10 < if
@@ -479,16 +489,6 @@ create u.buffer 8 cell * allot
     cell +
   repeat
   2drop ;
-
-: repeat-char ( ct char -- )
-  swap 0 ( char ct acc )
-  begin
-    2dup >
-  while
-    2 pick emit
-    1+
-  repeat
-  3drop ;
 
 : pad-left ( u width char -- )
   >r swap uwidth - r> repeat-char ;
@@ -542,7 +542,8 @@ create u.buffer 8 cell * allot
   while
     dup 16 u.r
     16 0 ?do
-      dup i + c@ 2 u.0 space
+      dup i + c@ 2
+      u.0 space
     loop
     16 0 ?do
       dup i + c@
@@ -618,7 +619,7 @@ create u.buffer 8 cell * allot
       space
     endof
     dup dup in-memory? 0= if
-      ." data(" 0 .r ." ) "
+      ." data(" 0 u.r ." ) "
     else
       cfa> drop >name type space
     then
