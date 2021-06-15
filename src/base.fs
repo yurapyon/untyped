@@ -46,6 +46,7 @@ latest @ make-immediate
 : <= > 0= ;
 : >= < 0= ;
 
+\ todo maybe change to have normal arg order
 : within \ ( val max min -- t/f )
   >r over r> \ ( val max val min )
   >= -rot < and ;
@@ -285,12 +286,13 @@ latest @ make-immediate
 
 \ TODO rename this
 : h>u ( hex-char -- u )
+  case
   dup [char] 9 [char] 0 within if [char] 0 -      else
-  dup [char] F [char] A within if [char] A - 10 + else
-  dup [char] f [char] a within if [char] a - 10 + else
+  dup [char] Z [char] A within if [char] A - 10 + else
+  dup [char] z [char] a within if [char] a - 10 + else
     \ TODO error
     drop 0
-  then then then ;
+  endcase ;
 
 : read-byte ( -- byte )
   key key
@@ -526,8 +528,8 @@ create u.buffer 8 cell * allot
   while
     dup 16 u.r
     16 0 ?do
-      dup i + c@ 2
-      u.0 space
+      dup i + c@
+      2 u.0 space
     loop
     16 0 ?do
       dup i + c@
@@ -543,7 +545,7 @@ create u.buffer 8 cell * allot
 
 \ ===
 
-: >name
+: >name ( word-addr -- addr len )
   cell + 2 + dup 1- c@ ;
 
 : >flags
