@@ -36,7 +36,13 @@ pub fn demo(allocator: *Allocator) !void {
         defer allocator.free(f);
 
         try vm.readInput(f);
-        try vm.quit();
+        vm.interpret() catch |err| switch (err) {
+            error.WordNotFound => {
+                std.debug.print("word not found: {}\n", .{vm.word_not_found});
+                return err;
+            },
+            else => return err,
+        };
     }
 }
 

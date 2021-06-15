@@ -5,20 +5,18 @@ const ArrayList = std.ArrayList;
 //;
 
 // TODO
-//   float stack
-//   limit word len (go with 64 i guess?)
-//     think its limited to 255 because len is a byte
-//   instead of line_buf_len should it be a ptr to the top
-//   key?
-//   , and c, can be written in forth
-//   find just returns t/f
-//   change stle of line comments ?
-//     \ is annoying, # would work
-//   have a way to notify on overwrite name
+// float stack
+// instead of line_buf_len should it be a ptr to the top
+// key? (key available ?)
+// have a way to notify on overwrite name
+//    hashtable
+// stuff like sp, rsp, here, latest, dont have to actually be in forth memory
+//   because everything uses the same address space its fine
+// would be nice to be able to write repl in forth itself
+//   need read/parse
 
-// sp points to 1 beyond the top of the stack
+// stack pointers point to 1 beyond the top of the stack
 //   should i keep it this way?
-// rsp is the same
 
 // state == forth_true in compilation state
 
@@ -31,6 +29,7 @@ pub const VM = struct {
         // TODO specialize these errors per stack
         StackUnderflow,
         StackOverflow,
+        StackIndexOutOfRange,
 
         ReturnStackUnderflow,
         ReturnStackOverflow,
@@ -39,6 +38,7 @@ pub const VM = struct {
         WordNotFound,
         EndOfInput,
         InvalidNumber,
+        ExecutionError,
     } || Allocator.Error;
 
     pub const baseLib = @embedFile("base.fs");
@@ -56,20 +56,15 @@ pub const VM = struct {
     // TODO use doBuiltin dummy function address
     const builtin_fn_id = 0;
 
-    const find_info_not_found = 0;
-    const find_info_immediate = 1;
-    const find_info_not_immediate = ~@as(Cell, 0);
-
+    const word_max_len = std.math.maxInt(u8);
     const word_immediate_flag = 0x2;
     const word_hidden_flag = 0x1;
 
     const mem_size = 4 * 1024 * 1024;
     const stack_size = 192 * @sizeOf(Cell);
     const rstack_size = 64 * @sizeOf(Cell);
+    // TODO this needs to be cell aligned
     const fstack_size = 64 * @sizeOf(Float);
-    // TODO this determines dictionary start
-    //        has to be cell aligned
-    const line_buf_size = 128;
 
     const latest_pos = 0 * @sizeOf(Cell);
     const here_pos = 1 * @sizeOf(Cell);
@@ -78,12 +73,10 @@ pub const VM = struct {
     const sp_pos = 4 * @sizeOf(Cell);
     const rsp_pos = 5 * @sizeOf(Cell);
     const fsp_pos = 6 * @sizeOf(Cell);
-    const line_buf_len_pos = 7 * @sizeOf(Cell);
-    const stack_start = 8 * @sizeOf(Cell);
+    const stack_start = 7 * @sizeOf(Cell);
     const rstack_start = stack_start + stack_size;
     const fstack_start = rstack_start + rstack_size;
-    const line_buf_start = fstack_start + fstack_size;
-    const dictionary_start = line_buf_start + line_buf_size;
+    const dictionary_start = fstack_start + fstack_size;
 
     pub const ParseNumberResult = union(enum) {
         Float: Float,
@@ -95,15 +88,16 @@ pub const VM = struct {
     input_at: usize,
 
     // execution
-    last_ip: Cell,
+    last_next: Cell,
     next: Cell,
-    exec_cfa: Cell,
-    exec_cmd: Cell,
+    curr_xt: Cell,
+    should_bye: bool,
+    should_quit: bool,
 
     lit_address: Cell,
     litFloat_address: Cell,
+    docol_address: Cell,
     quit_address: Cell,
-    should_stop_interpreting: bool,
 
     mem: []u8,
     latest: *Cell,
@@ -113,12 +107,12 @@ pub const VM = struct {
     sp: *Cell,
     rsp: *Cell,
     fsp: *Cell,
-    line_buf_len: *Cell,
     stack: [*]Cell,
     rstack: [*]Cell,
     fstack: [*]Float,
-    line_buf: [*]u8,
     dictionary: [*]u8,
+
+    word_not_found: []u8,
 
     pub fn init(allocator: *Allocator) Error!Self {
         var ret: Self = undefined;
@@ -126,9 +120,8 @@ pub const VM = struct {
         ret.allocator = allocator;
         ret.last_input = null;
         ret.input_at = 0;
-        ret.last_ip = 0;
+        ret.last_next = 0;
         ret.next = 0;
-        ret.should_stop_interpreting = true;
 
         ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(Cell), null);
         ret.latest = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[latest_pos]));
@@ -138,11 +131,9 @@ pub const VM = struct {
         ret.sp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[sp_pos]));
         ret.rsp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[rsp_pos]));
         ret.fsp = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[fsp_pos]));
-        ret.line_buf_len = @ptrCast(*Cell, @alignCast(@alignOf(Cell), &ret.mem[line_buf_len_pos]));
         ret.stack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[stack_start]));
         ret.rstack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[rstack_start]));
         ret.fstack = @ptrCast([*]Float, @alignCast(@alignOf(Cell), &ret.mem[fstack_start]));
-        ret.line_buf = @ptrCast([*]u8, &ret.mem[line_buf_start]);
         ret.dictionary = @ptrCast([*]u8, &ret.mem[dictionary_start]);
 
         // init vars
@@ -153,12 +144,17 @@ pub const VM = struct {
         ret.sp.* = @ptrToInt(ret.stack);
         ret.rsp.* = @ptrToInt(ret.rstack);
         ret.fsp.* = @ptrToInt(ret.fstack);
-        ret.line_buf_len.* = 0;
 
         // TODO make all this catch unreachable
         try ret.initBuiltins();
         try ret.readInput(baseLib);
-        try ret.quit();
+        ret.interpret() catch |err| switch (err) {
+            error.WordNotFound => {
+                std.debug.print("word not found: {}\n", .{ret.word_not_found});
+                return err;
+            },
+            else => return err,
+        };
 
         return ret;
     }
@@ -171,12 +167,17 @@ pub const VM = struct {
     }
 
     fn initBuiltins(self: *Self) Error!void {
+        try self.createBuiltin("docol", 0, &docol);
+        self.docol_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("exit", 0, &exit);
         try self.createBuiltin("lit", 0, &lit);
         self.lit_address = wordHeaderCodeFieldAddress(self.latest.*);
         try self.createBuiltin("litfloat", 0, &litFloat);
         self.litFloat_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("execute", 0, &executeInternal);
         try self.createBuiltin("quit", 0, &quit);
         self.quit_address = wordHeaderCodeFieldAddress(self.latest.*);
+        try self.createBuiltin("bye", 0, &bye);
 
         try self.createBuiltin("mem", 0, &memStart);
         try self.createBuiltin("mem-size", 0, &memSize);
@@ -211,8 +212,6 @@ pub const VM = struct {
         try self.createBuiltin("R@", 0, &rFetch);
         // TODO 2r> 2>r
 
-        try self.createBuiltin("docol", 0, &docol);
-        try self.createBuiltin("exit", 0, &exit);
         try self.createBuiltin("define", 0, &define);
         try self.createBuiltin("word", 0, &word);
         try self.createBuiltin("find", 0, &find);
@@ -235,10 +234,6 @@ pub const VM = struct {
         try self.createBuiltin(">cfa", 0, &cfa_);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
-
-        try self.createBuiltin("bye", 0, &bye);
-        // TODO interpret
-        try self.createBuiltin("execute", 0, &execute);
 
         try self.createBuiltin("true", 0, &true_);
         try self.createBuiltin("false", 0, &false_);
@@ -276,7 +271,12 @@ pub const VM = struct {
         try self.createBuiltin("cmove>", 0, &cmoveUp);
         try self.createBuiltin("cmove<", 0, &cmoveDown);
 
-        try self.createBuiltin("f.", 0, &printFloat);
+        try self.createBuiltin("f.", 0, &fPrint);
+        try self.createBuiltin("f+", 0, &fplus);
+        try self.createBuiltin("f-", 0, &fminus);
+        try self.createBuiltin("f*", 0, &ftimes);
+        try self.createBuiltin("f/", 0, &fdivide);
+        try self.createBuiltin("float", 0, &fSize);
     }
 
     //;
@@ -296,6 +296,14 @@ pub const VM = struct {
         }
         @intToPtr(*Cell, self.sp.*).* = val;
         self.sp.* += @sizeOf(Cell);
+    }
+
+    pub fn idx(self: *Self, val: Cell) Error!Cell {
+        const ptr = self.sp.* - (val + 1) * @sizeOf(Cell);
+        if (ptr < @ptrToInt(self.stack)) {
+            return error.StackIndexOutOfRange;
+        }
+        return @intToPtr(*const Cell, ptr).*;
     }
 
     pub fn rpop(self: *Self) Error!Cell {
@@ -373,13 +381,13 @@ pub const VM = struct {
         @intToPtr(*u8, addr).* = val;
     }
 
+    // TODO maybe dont copy the buffer into memory here
     pub fn readInput(self: *Self, buf: []const u8) Allocator.Error!void {
         if (self.last_input) |input| {
             self.allocator.free(input);
         }
         self.last_input = try self.allocator.dupe(u8, buf);
         self.input_at = 0;
-        self.should_stop_interpreting = false;
     }
 
     pub fn readNextChar(self: *Self) Error!u8 {
@@ -396,22 +404,21 @@ pub const VM = struct {
         }
     }
 
-    pub fn readNextWord(self: *Self) Error!usize {
+    // TODO read next word returns * to the input buffer
+    //        rather than copying the string to temp buffer
+    pub fn readNextWord(self: *Self) Error![]u8 {
         if (self.last_input == null) {
             return error.NoInputBuffer;
         }
 
         const input = self.last_input.?;
 
-        var len: Cell = 0;
-        var ch: u8 = undefined;
-
         while (true) {
             if (self.input_at >= input.len) {
                 return error.EndOfInput;
             }
 
-            ch = input[self.input_at];
+            const ch = input[self.input_at];
 
             if (ch == ' ' or ch == '\n') {
                 self.input_at += 1;
@@ -422,9 +429,7 @@ pub const VM = struct {
                         return error.EndOfInput;
                     }
 
-                    ch = input[self.input_at];
-
-                    if (ch == '\n') {
+                    if (input[self.input_at] == '\n') {
                         break;
                     }
                     self.input_at += 1;
@@ -435,29 +440,29 @@ pub const VM = struct {
             self.input_at += 1;
         }
 
+        const start_idx = self.input_at;
+        var len: Cell = 0;
+
         while (true) {
             if (self.input_at >= input.len) {
                 break;
             }
 
-            ch = input[self.input_at];
+            const ch = input[self.input_at];
 
             if (ch == ' ' or ch == '\n') {
                 break;
             }
 
-            if (len >= line_buf_size) {
+            if (len >= word_max_len) {
                 return error.WordTooLong;
             }
 
-            self.line_buf[len] = ch;
             len += 1;
-
             self.input_at += 1;
         }
 
-        self.line_buf_len.* = len;
-        return len;
+        return input[start_idx..(start_idx + len)];
     }
 
     // TODO rename/refactor somehow
@@ -534,10 +539,10 @@ pub const VM = struct {
     //;
 
     // word header is:
-    // |        | | | | | | | ... | ...
-    //  ^        ^ ^ ^       ^     ^
-    //  addr of  | | name    |     code
-    //  previous | name len  padding to @alignOf(Cell)
+    // |        | | |  ...  |  ...  | ...
+    //  ^        ^ ^ ^       ^       ^
+    //  addr of  | | name    |       code
+    //  previous | name_len  padding to @alignOf(Cell)
     //  word     flags
 
     // builtins are:
@@ -580,15 +585,9 @@ pub const VM = struct {
         return @intToPtr(*const Cell, addr).*;
     }
 
-    // TODO do this differently, ie return a *u8 {{{
-    pub fn wordHeaderFlags(addr: Cell) u8 {
-        return @intToPtr(*const u8, addr + @sizeOf(Cell)).*;
+    pub fn wordHeaderFlags(addr: Cell) *u8 {
+        return @intToPtr(*u8, addr + @sizeOf(Cell));
     }
-
-    pub fn wordHeaderSetFlags(addr: Cell, to: u8) void {
-        @intToPtr(*u8, addr + @sizeOf(Cell)).* = to;
-    }
-    // }}}
 
     pub fn wordHeaderName(addr: Cell) []u8 {
         var name: []u8 = undefined;
@@ -631,7 +630,7 @@ pub const VM = struct {
         var check = self.latest.*;
         while (check != 0) : (check = wordHeaderPrevious(check)) {
             const check_name = wordHeaderName(check);
-            const flags = wordHeaderFlags(check);
+            const flags = wordHeaderFlags(check).*;
             if (check_name.len != len) continue;
             if ((flags & word_hidden_flag) != 0) continue;
 
@@ -651,23 +650,148 @@ pub const VM = struct {
         }
 
         if (check == 0) {
+            self.word_not_found = name;
             return error.WordNotFound;
         } else {
             return check;
         }
     }
 
+    // ===
+
+    pub fn execute(self: *Self, xt: Cell) Error!void {
+        // note: self.quit_address is just being used as a marker
+        self.last_next = self.quit_address;
+        self.next = self.quit_address;
+        self.curr_xt = xt;
+        var first = xt;
+
+        self.should_quit = false;
+        while (!self.should_bye and !self.should_quit) {
+            if (self.curr_xt == self.quit_address) {
+                try self.quit();
+                break;
+            }
+            if ((try self.checkedReadCell(first)) == builtin_fn_id) {
+                const fn_ptr = builtinFnPtr(first);
+                try fn_ptr.*(self);
+            } else {
+                self.last_next = self.next;
+                self.next = first;
+            }
+
+            self.curr_xt = self.next;
+            first = try self.checkedReadCell(self.curr_xt);
+            self.next += @sizeOf(Cell);
+        }
+        self.should_quit = false;
+    }
+
+    pub fn interpret(self: *Self) Error!void {
+        self.should_bye = false;
+        while (!self.should_bye) {
+            const is_compiling = self.state.* != forth_false;
+
+            self.word() catch |err| switch (err) {
+                error.EndOfInput => {
+                    self.should_bye = true;
+                    break;
+                },
+                else => return err,
+            };
+            self.input_at += 1;
+            const word_len = try self.idx(0);
+            const word_addr = try self.idx(1);
+
+            try self.find();
+
+            const was_found = try self.pop();
+            const addr = try self.pop();
+            if (was_found == forth_true) {
+                const flags = wordHeaderFlags(addr).*;
+                const is_immediate = (flags & word_immediate_flag) != 0;
+                const cfa = wordHeaderCodeFieldAddress(addr);
+                if (is_compiling and !is_immediate) {
+                    try self.push(cfa);
+                    try self.comma();
+                } else {
+                    try self.execute(cfa);
+                }
+            } else {
+                var str = stringAt(word_addr, word_len);
+                const maybe_num = parseNumber(str, self.base.*) catch null;
+                if (maybe_num) |num| {
+                    if (is_compiling) {
+                        switch (num) {
+                            .Cell => |c| {
+                                try self.push(self.lit_address);
+                                try self.comma();
+                                try self.push(c);
+                                try self.comma();
+                            },
+                            .Float => |f| {
+                                try self.push(self.litFloat_address);
+                                try self.comma();
+                                try self.push(floatToCell(f));
+                                try self.comma();
+                            },
+                        }
+                    } else {
+                        switch (num) {
+                            .Cell => |c| try self.push(c),
+                            .Float => |f| try self.fpush(f),
+                        }
+                    }
+                } else {
+                    self.word_not_found = str;
+                    return error.WordNotFound;
+                }
+            }
+        }
+        self.should_bye = false;
+    }
+
     // builtins
+
+    pub fn docol(self: *Self) Error!void {
+        try self.rpush(self.last_next);
+        self.next = self.curr_xt + @sizeOf(Cell);
+    }
+
+    pub fn exit(self: *Self) Error!void {
+        self.next = try self.rpop();
+    }
 
     pub fn lit(self: *Self) Error!void {
         try self.push(try self.checkedReadCell(self.next));
         self.next += @sizeOf(Cell);
     }
 
+    pub fn litFloat(self: *Self) Error!void {
+        try self.fpush(cellToFloat(try self.checkedReadCell(self.next)));
+        self.next += @sizeOf(Cell);
+    }
+
+    pub fn executeInternal(self: *Self) Error!void {
+        const xt = try self.pop();
+        const first = @intToPtr(*Cell, xt).*;
+        if (first == builtin_fn_id) {
+            try builtinFnPtr(xt).*(self);
+        } else if (first == self.docol_address) {
+            try self.rpush(self.next);
+            self.next = xt + @sizeOf(Cell);
+        } else {
+            return error.ExecutionError;
+        }
+    }
+
     pub fn quit(self: *Self) Error!void {
         self.rsp.* = @ptrToInt(self.rstack);
-        // TODO do i need to explicitly call interpret
-        try self.interpret();
+        self.should_quit = true;
+    }
+
+    pub fn bye(self: *Self) Error!void {
+        self.should_bye = true;
     }
 
     //;
@@ -778,7 +902,7 @@ pub const VM = struct {
 
     pub fn nip(self: *Self) Error!void {
         const a = try self.pop();
-        const b = try self.pop();
+        _ = try self.pop();
         try self.push(a);
     }
 
@@ -836,33 +960,22 @@ pub const VM = struct {
 
     //;
 
-    pub fn docol(self: *Self) Error!void {
-        try self.rpush(self.last_ip);
-        self.next = self.exec_cfa + @sizeOf(Cell);
-    }
-
-    pub fn exit(self: *Self) Error!void {
-        self.next = try self.rpop();
-    }
-
     pub fn define(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
         if (len == 0) {
             try self.createWordHeader("", 0);
-        } else {
+        } else if (len < word_max_len) {
             try self.createWordHeader(stringAt(addr, len), 0);
+        } else {
+            return error.WordTooLong;
         }
     }
 
-    // note:
-    //   the next word you read after calling 'word' messes with the line_buf
-    //   word doesnt really work ehn interpreting
-    //   could maybe be fixed by double buffering
     pub fn word(self: *Self) Error!void {
-        const len = try self.readNextWord();
-        try self.push(@ptrToInt(self.line_buf));
-        try self.push(len);
+        const slc = try self.readNextWord();
+        try self.push(@ptrToInt(slc.ptr));
+        try self.push(slc.len);
     }
 
     pub fn find(self: *Self) Error!void {
@@ -871,18 +984,17 @@ pub const VM = struct {
         const ret = self.findWord(addr, len) catch |err| {
             switch (err) {
                 error.WordNotFound => {
+                    self.word_not_found = stringAt(addr, len);
                     try self.push(addr);
-                    try self.push(find_info_not_found);
+                    try self.push(forth_false);
                     return;
                 },
                 else => return err,
             }
         };
 
-        const flags = wordHeaderFlags(ret);
-        const is_immediate = (flags & word_immediate_flag) != 0;
         try self.push(ret);
-        try self.push(if (is_immediate) find_info_immediate else find_info_not_immediate);
+        try self.push(forth_true);
     }
 
     pub fn fetch(self: *Self) Error!void {
@@ -921,8 +1033,12 @@ pub const VM = struct {
 
     pub fn tick(self: *Self) Error!void {
         try self.word();
+        const word_len = try self.idx(0);
+        const word_addr = try self.idx(1);
+
         try self.find();
-        if ((try self.pop()) == find_info_not_found) {
+        if ((try self.pop()) == forth_false) {
+            self.word_not_found = stringAt(word_addr, word_len);
             return error.WordNotFound;
         }
         try self.cfa_();
@@ -953,14 +1069,12 @@ pub const VM = struct {
 
     pub fn makeImmediate(self: *Self) Error!void {
         const addr = try self.pop();
-        const flags = wordHeaderFlags(addr);
-        wordHeaderSetFlags(self.latest.*, flags ^ word_immediate_flag);
+        wordHeaderFlags(addr).* ^= word_immediate_flag;
     }
 
     pub fn hide(self: *Self) Error!void {
         const addr = try self.pop();
-        const flags = wordHeaderFlags(addr);
-        wordHeaderSetFlags(addr, flags ^ word_hidden_flag);
+        wordHeaderFlags(addr).* ^= word_hidden_flag;
     }
 
     pub fn cfa_(self: *Self) Error!void {
@@ -978,104 +1092,6 @@ pub const VM = struct {
         } else {
             self.next += @sizeOf(Cell);
         }
-    }
-
-    //;
-
-    // TODO move up
-    pub fn executeCfa(self: *Self, cfa: Cell) Error!void {
-        self.last_ip = self.quit_address;
-        self.next = self.quit_address;
-        self.exec_cfa = cfa;
-        self.exec_cmd = cfa;
-        while (!self.should_stop_interpreting) {
-            if (self.exec_cfa == self.quit_address) break;
-            if ((try self.checkedReadCell(self.exec_cmd)) == builtin_fn_id) {
-                const fn_ptr = builtinFnPtr(self.exec_cmd);
-                try fn_ptr.*(self);
-            } else {
-                self.last_ip = self.next;
-                self.next = self.exec_cmd;
-            }
-
-            self.exec_cfa = self.next;
-            self.exec_cmd = try self.checkedReadCell(self.exec_cfa);
-            self.next += @sizeOf(Cell);
-        }
-    }
-
-    pub fn bye(self: *Self) Error!void {
-        self.should_stop_interpreting = true;
-    }
-
-    pub fn interpret(self: *Self) Error!void {
-        while (!self.should_stop_interpreting) {
-            const is_compiling = self.state.* != forth_false;
-
-            self.word() catch |err| switch (err) {
-                error.EndOfInput => {
-                    self.should_stop_interpreting = true;
-                    break;
-                },
-                else => return err,
-            };
-            self.input_at += 1;
-            try self.find();
-
-            const find_info = try self.pop();
-            const addr = try self.pop();
-            if (find_info != find_info_not_found) {
-                const flags = wordHeaderFlags(addr);
-                const is_immediate = (flags & word_immediate_flag) != 0;
-                const cfa = wordHeaderCodeFieldAddress(addr);
-                if (is_compiling and !is_immediate) {
-                    try self.push(cfa);
-                    try self.comma();
-                } else {
-                    try self.executeCfa(cfa);
-                }
-            } else {
-                // note: assumes self.word() reads into line_buf
-                //   and that that isnt changed by the time you get here
-                var str: []const u8 = undefined;
-                str.ptr = self.line_buf;
-                str.len = self.line_buf_len.*;
-                const maybe_num = parseNumber(str, self.base.*) catch null;
-                if (maybe_num) |num| {
-                    if (is_compiling) {
-                        switch (num) {
-                            .Cell => |c| {
-                                try self.push(self.lit_address);
-                                try self.comma();
-                                try self.push(c);
-                                try self.comma();
-                            },
-                            .Float => |f| {
-                                try self.push(self.litFloat_address);
-                                try self.comma();
-                                try self.push(floatToCell(f));
-                                try self.comma();
-                            },
-                        }
-                    } else {
-                        switch (num) {
-                            .Cell => |c| try self.push(c),
-                            .Float => |f| try self.fpush(f),
-                        }
-                    }
-                } else {
-                    std.debug.print("word not found: '{}'\n", .{str});
-                    return error.WordNotFound;
-                }
-            }
-        }
-    }
-
-    pub fn execute(self: *Self) Error!void {
-        const addr = try self.pop();
-        const prev_next = self.next;
-        try self.executeCfa(addr);
-        self.next = prev_next;
     }
 
     //;
@@ -1164,7 +1180,7 @@ pub const VM = struct {
     pub fn plus(self: *Self) Error!void {
         const a = try self.pop();
         const b = try self.pop();
-        try self.push(a +% b);
+        try self.push(b +% a);
     }
 
     pub fn minus(self: *Self) Error!void {
@@ -1176,7 +1192,7 @@ pub const VM = struct {
     pub fn times(self: *Self) Error!void {
         const a = try self.pop();
         const b = try self.pop();
-        try self.push(a *% b);
+        try self.push(b *% a);
     }
 
     pub fn divMod(self: *Self) Error!void {
@@ -1312,17 +1328,36 @@ pub const VM = struct {
         return @bitCast(Float, c);
     }
 
-    pub fn litFloat(self: *Self) Error!void {
-        try self.fpush(cellToFloat(try self.checkedReadCell(self.next)));
-        self.next += @sizeOf(Cell);
-    }
-
-    pub fn printFloat(self: *Self) Error!void {
+    pub fn fPrint(self: *Self) Error!void {
         const float = try self.fpop();
         std.debug.print("{d}", .{float});
     }
 
-    pub fn float(self: *Self) Error!void {
+    pub fn fSize(self: *Self) Error!void {
         try self.push(@sizeOf(Float));
+    }
+
+    pub fn fplus(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(b + a);
+    }
+
+    pub fn fminus(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(b - a);
+    }
+
+    pub fn ftimes(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(b * a);
+    }
+
+    pub fn fdivide(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(b / a);
     }
 };

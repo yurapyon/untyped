@@ -1,8 +1,5 @@
-\ :
 here @
-latest @ ,
-0 c, 1 c, 58 c,
-0 c, 0 c, 0 c, 0 c, 0 c,
+word : define
 ' docol ,
 ' word , ' define ,
 ' latest , ' @ , ' hide ,
@@ -11,17 +8,15 @@ latest @ ,
 ' exit ,
 latest !
 
-\ ;
 here @
-latest @ ,
-flag,immediate c, 1 c, 59 c,
-0 c, 0 c, 0 c, 0 c, 0 c,
+word ; define
 ' docol ,
 ' lit , ' exit , ' , ,
 ' latest , ' @ , ' hide ,
 ' [ ,
 ' exit ,
 latest !
+latest @ make-immediate
 
 \ ===
 
@@ -36,7 +31,6 @@ latest !
 : flip swap rot ;
 
 \ ;
-
 
 : 0= 0 = ;
 : 0< 0 < ;
@@ -137,16 +131,6 @@ latest !
 : cr newline emit ;
 
 \ ;
-
-\ not a tailcalling recurse
-: recurse
-  latest @ >cfa ,
-  ; immediate
-
-\ todo check this works
-: tailcall
-  ' cell + ,
-  ; immediate
 
 \ ;
 
@@ -367,7 +351,7 @@ latest !
 
 \ ===
 
-: rstack.at ( idx -- addr )
+: ridx ( idx -- addr )
   2 + cells rsp @ swap - ;
 
 : ?do
@@ -404,19 +388,19 @@ latest !
 
 : i
   ['] lit , 1 ,
-  ['] rstack.at ,
+  ['] ridx ,
   ['] @ ,
   ; immediate
 
 : j
   ['] lit , 3 ,
-  ['] rstack.at ,
+  ['] ridx ,
   ['] @ ,
   ; immediate
 
 : k
   ['] lit , 5 ,
-  ['] rstack.at ,
+  ['] ridx ,
   ['] @ ,
   ; immediate
 
@@ -628,9 +612,40 @@ create u.buffer 8 cell * allot
   repeat
   2drop ;
 
+: recurse
+  latest @ >cfa ,
+  ; immediate
+
+\ note: if called with an immediate word,
+\   assumes that word will compile the address
+\   you want to be tailcalled to here @
+\ TODO doesnt work with builtins,
+\   check if cfa is builitin,
+\   dont do anything in that case
+: tailcall
+  word find drop dup immediate? if
+    here @ swap
+    >cfa execute
+    dup @ cell + swap !
+  else
+    >cfa cell + ,
+  then
+  ; immediate
+
 \ ===
 
 (
+:noname 1 2 .s cr + . cr ;
+execute
+1 ' dup execute .s cr
+
+: fn
+  1 2
+  5000000 0 ?do
+    swap
+  loop ;
+
+fn
 
 create hello 5 c,
 : hello2 5 ;
