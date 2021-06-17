@@ -1,3 +1,6 @@
+\ TODO
+\ [if] [else] [then]
+
 here @
 word : define
 ' docol ,
@@ -23,6 +26,8 @@ latest @ make-immediate
 : immediate latest @ make-immediate ; immediate
 : hidden latest @ hide ; immediate
 
+\ ===
+
 : 2dup over over ;
 : 2drop drop drop ;
 : 2over 3 pick 3 pick ;
@@ -30,12 +35,16 @@ latest @ make-immediate
 : 3drop drop 2drop ;
 : flip swap rot ;
 
-\ ;
+: chars ;
+: cells cell * ;
+: floats float * ;
 
 : 0= 0 = ;
 : 0< 0 < ;
 : 0> 0 > ;
 : 0<> 0 <> ;
+: <= > 0= ;
+: >= < 0= ;
 
 : 1+ 1 + ;
 : 1- 1 - ;
@@ -43,30 +52,7 @@ latest @ make-immediate
 : / /mod nip ;
 : mod /mod drop ;
 
-: <= > 0= ;
-: >= < 0= ;
-
-\ todo maybe change to have normal arg order
-: within \ ( val max min -- t/f )
-  >r over r> \ ( val max val min )
-  >= -rot < and ;
-
-: cells cell * ;
-: chars ;
-
-: decimal 10 base ! ;
-: hex 16 base ! ;
-: octal 8 base ! ;
-
-\ ;
-
-: [char]
-  char ['] lit , ,
-  ; immediate
-
-: [compile]
-  word find drop >cfa ,
-  ; immediate
+\ ===
 
 : if
   ['] 0branch ,
@@ -108,6 +94,21 @@ latest @ make-immediate
   here @ swap -
   swap ! ; immediate
 
+\ ===
+
+: [compile]
+  word find drop >cfa ,
+  ; immediate
+
+: literal
+  ['] lit , , ; immediate
+
+: [char]
+  char [compile] literal
+  ; immediate
+
+\ ===
+
 : (
   1
   begin
@@ -123,111 +124,8 @@ latest @ make-immediate
   drop
   ; immediate
 
-\ ;
-
-: newline 10 ;
-: bl 32 ;
-: backslash 92 ;
-
-: cr newline emit ;
-
-\ ;
-
-\ ;
-
-: allot
-  here @ + here ! ;
-
-\ todo check this works
-: move ( src n dest )
-  3dup nip < if
-    cmove>
-  else
-    cmove<
-  then ;
-
-: mem-end
-  mem mem-size + ;
-
-: unused
-  mem-end here @ - ;
-
-: latestxt
-  latest @ >cfa ;
-
-: create
-  word define
-  ['] docol ,
-  ['] lit , here @ 2 cells + ,
-  ['] exit , ;
-
-: does>,redirect-latest ( code-addr -- )
-  latestxt 3 cells + ! ;
-
-: does>
-  state @ if
-    ['] lit , here @ 3 cells + ,
-    ['] does>,redirect-latest ,
-    ['] exit ,
-  else
-    here @ does>,redirect-latest
-    latest @ hide
-    ]
-  then
-  ; immediate
-
-: >body
-  2 cells + @ ;
-
-: constant
-  create ,
-  does> @ ;
-
-: value.field ( val-addr -- field-addr )
-  >cfa 2 cells + ;
-
-: value
-  word define
-  ['] docol ,
-  ['] lit ,
-  ,
-  ['] exit , ;
-
-: to
-  word find drop value.field
-  state @ if
-    ['] lit ,
-    ,
-    ['] ! ,
-  else
-    !
-  then
-  ; immediate
-
-: :noname
-  0 0 define
-  here @
-  ['] docol ,
-  ] ;
-
-\ ===
-
-: aligned ( addr -- a-addr )
-  dup cell mod ( addr off-aligned )
-  dup if
-    cell swap - +
-  else
-    drop
-  then ;
-
-: align ( -- )
-  here @ aligned here ! ;
-
-\ ==
-
 : case
-  0
-  ; immediate
+  0 ; immediate
 
 : of
   ['] over ,
@@ -249,112 +147,11 @@ latest @ make-immediate
   repeat
   ; immediate
 
-\ ===
-
-: read-string-into-memory ( start-addr -- end-addr )
-  begin
-    key
-    dup [char] " <>
-  while
-    over c!
-    1+
-  repeat
-  drop ;
-
-: s" ( ( c: -- ) ( i: -- addr len ) )
-  state @ if
-    ['] litstring ,
-    here @ 0 ,
-    here @ read-string-into-memory
-    here @ -
-    dup allot align
-    swap !
-  else
-    here @
-    here @ read-string-into-memory
-    here @ -
-  then
-  ; immediate
-
-: ." ( -- )
-  [compile] s"
-  state @ if
-    ['] type ,
-  else
-    type
-  then ; immediate
-
-\ TODO rename this
-: h>u ( hex-char -- u )
-  case
-  dup [char] 9 [char] 0 within if [char] 0 -      else
-  dup [char] Z [char] A within if [char] A - 10 + else
-  dup [char] z [char] a within if [char] a - 10 + else
-    \ TODO error
-    drop 0
-  endcase ;
-
-: read-byte ( -- byte )
-  key key
-  h>u swap h>u 16 * + ;
-
-: read-escaped-string-into-memory ( start-addr -- end-addr )
-  begin
-    key
-    dup [char] " <>
-  while
-    dup backslash = if
-      drop
-      key
-      \ TODO
-      \ [char] m of 13 10
-      \ \n does cr lf on windows
-      \   newline is cr lf ? how
-      \   get rid of 'newline' and have linefeed ?
-      case
-      [char] "  of [char] "  endof
-      [char] n  of newline   endof
-      backslash of backslash endof
-      [char] x  of read-byte endof
-      [char] a  of 7 endof
-      [char] b  of 8 endof
-      [char] e  of 27 endof
-      [char] f  of 12 endof
-      [char] l  of 10 endof
-      [char] q  of 34 endof
-      [char] r  of 13 endof
-      [char] t  of 9 endof
-      [char] v  of 11 endof
-      [char] z  of 0 endof
-        \ TODO error
-        s" invalid string escape" type cr
-        bye
-      endcase
-    then
-    over c!
-    1+
-  repeat
-  drop ;
-
-: s\" ( ( c: -- ) ( i: -- addr len ) )
-  state @ if
-    ['] litstring ,
-    here @ 0 ,
-    here @ read-escaped-string-into-memory
-    here @ -
-    dup allot align
-    swap !
-  else
-    here @
-    here @ read-escaped-string-into-memory
-    here @ -
-  then
-  ; immediate
-
-\ ===
-
 : ridx ( idx -- addr )
   2 + cells rsp @ swap - ;
+
+: depth
+  sp@ s0 - cell / ;
 
 : ?do
   ['] >r ,
@@ -408,10 +205,235 @@ latest @ make-immediate
 
 \ ===
 
-: literal
-  ['] lit , , ; immediate
+: >name ( word-addr -- addr len )
+  cell + 2 + dup 1- c@ ;
 
+: >flags
+  cell + c@ ;
+
+: hidden?
+  >flags flag,hidden and ;
+
+: immediate?
+  >flags flag,immediate and ;
+
+\ todo maybe change to have normal arg order
+: within     ( val max min -- t/f )
+  >r over r> ( val max val min )
+  >= -rot < and ;
+
+: decimal 10 base ! ;
+: hex 16 base ! ;
+: octal 8 base ! ;
+
+\ ===
+
+: bl 32 ;
+: backslash 92 ;
+: cr 10 emit ;
 : space bl emit ;
+
+\ ===
+
+: latestxt
+  latest @ >cfa ;
+
+: create
+  word define
+  ['] docol ,
+  ['] lit , here @ 2 cells + ,
+  ['] exit , ;
+
+: does>,redirect-latest ( code-addr -- )
+  latestxt 3 cells + ! ;
+
+: does>
+  state @ if
+    ['] lit , here @ 3 cells + ,
+    ['] does>,redirect-latest ,
+    ['] exit ,
+  else
+    here @ does>,redirect-latest
+    latest @ hide
+    ]
+  then
+  ; immediate
+
+: >body ( 'create'd-word -- data-addr )
+  2 cells + @ ;
+
+: constant
+  create ,
+  does> @ ;
+
+: value.field ( val-addr -- field-addr )
+  >cfa 2 cells + ;
+
+: value
+  word define
+  ['] docol ,
+  ['] lit ,
+  ,
+  ['] exit , ;
+
+: to
+  word find drop value.field
+  state @ if
+    ['] lit ,
+    ,
+    ['] ! ,
+  else
+    !
+  then
+  ; immediate
+
+\ ===
+
+: :noname
+  0 0 define
+  here @
+  ['] docol ,
+  ] ;
+
+\ ===
+
+: aligned-to ( addr align -- a-addr )
+  2dup mod ( addr align off-aligned )
+  ?dup if
+    - +
+  else
+    drop
+  then ;
+
+: align-to ( align -- )
+  here @ swap aligned-to here ! ;
+
+: aligned ( addr -- a-addr )
+  cell aligned-to ;
+
+: align ( -- )
+  cell align-to ;
+
+: faligned ( addr -- a-addr )
+  float aligned-to ;
+
+: falign ( -- )
+  float align-to ;
+
+: allot ( ct -- )
+  here @ + here ! ;
+
+\ todo check this works
+: move ( src n dest )
+  3dup nip < if
+    cmove>
+  else
+    cmove<
+  then ;
+
+: mem-end mem mem-size + ;
+: unused mem-end here @ - ;
+
+\ ===
+
+: read-string-into-memory ( start-addr -- end-addr )
+  begin
+    key
+    dup [char] " <>
+  while
+    over c!
+    1+
+  repeat
+  drop ;
+
+: s" ( ( c: -- ) ( i: -- addr len ) )
+  state @ if
+    ['] litstring ,
+    here @ 0 ,
+    here @ read-string-into-memory
+    here @ -
+    dup allot align
+    swap !
+  else
+    here @
+    here @ read-string-into-memory
+    here @ -
+  then
+  ; immediate
+
+: ." ( -- )
+  [compile] s"
+  state @ if
+    ['] type ,
+  else
+    type
+  then ; immediate
+
+: char>digit ( hex-char -- u )
+  case
+  dup [char] 9 [char] 0 within if [char] 0 -      else
+  dup [char] Z [char] A within if [char] A - 10 + else
+  dup [char] z [char] a within if [char] a - 10 + else
+    \ TODO error
+    drop 0
+  endcase ;
+
+: read-byte ( -- byte )
+  key key
+  char>digit swap char>digit 16 * + ;
+
+: read-escaped-string-into-memory ( start-addr -- end-addr )
+  begin
+    key
+    dup [char] " <>
+  while
+    dup backslash = if
+      drop
+      key
+      \ TODO
+      \ [char] m of 13 10 ( cr lf )
+      \ \n does cr lf on windows
+      case
+      [char] "  of [char] "  endof
+      backslash of backslash endof
+      [char] x  of read-byte endof
+      [char] a  of 7 endof
+      [char] b  of 8 endof
+      [char] n  of 10 endof
+      [char] e  of 27 endof
+      [char] f  of 12 endof
+      [char] l  of 10 endof
+      [char] q  of 34 endof
+      [char] r  of 13 endof
+      [char] t  of 9 endof
+      [char] v  of 11 endof
+      [char] z  of 0 endof
+        \ TODO error
+        s" invalid string escape" type cr
+        bye
+      endcase
+    then
+    over c!
+    1+
+  repeat
+  drop ;
+
+: s\" ( ( c: -- ) ( i: -- addr len ) )
+  state @ if
+    ['] litstring ,
+    here @ 0 ,
+    here @ read-escaped-string-into-memory
+    here @ -
+    dup allot align
+    swap !
+  else
+    here @
+    here @ read-escaped-string-into-memory
+    here @ -
+  then
+  ; immediate
+
+\ ===
 
 : repeat-char ( ct char -- )
   swap 0 ( char ct acc )
@@ -437,11 +459,10 @@ latest @ make-immediate
 : uwidth ( u -- width )
   1 swap ( ct u )
   begin
-    base @ / dup
+    base @ / ?dup
   while
     swap 1+ swap
-  repeat
-  drop ;
+  repeat ;
 
 : chop-digit ( u -- u-lastdigit lastdigit )
   base @ /mod swap ;
@@ -458,9 +479,6 @@ create u.buffer 8 cell * allot
   dup 0= until
   2drop
   u.buffer r> type ;
-
-: depth
-  sp@ s0 - cell / ;
 
 : .s ( -- )
   [char] < emit
@@ -545,12 +563,6 @@ create u.buffer 8 cell * allot
 
 \ ===
 
-: >name ( word-addr -- addr len )
-  cell + 2 + dup 1- c@ ;
-
-: >flags
-  cell + c@ ;
-
 : >next ( addr -- next-addr )
   here @ latest @
   begin
@@ -559,12 +571,6 @@ create u.buffer 8 cell * allot
     nip dup @
   repeat
   drop nip ;
-
-: hidden?
-  >flags flag,hidden and ;
-
-: immediate?
-  >flags flag,immediate and ;
 
 : words
   latest @
@@ -636,7 +642,21 @@ create u.buffer 8 cell * allot
 
 \ ===
 
+: +field ( start this-size "name" -- end )
+  over + swap
+  create ,
+  does> @ + ;
+
+: field ( start this-size "name" -- end-aligned )
+  2dup aligned-to ( start this-size aligned-start )
+  flip drop       ( aligned-start this-size )
+  +field ;
+
+: enum ( value "name" -- value+1 )
+  dup constant 1+ ;
+
 (
+
 :noname 1 2 .s cr + . cr ;
 execute
 1 ' dup execute .s cr
