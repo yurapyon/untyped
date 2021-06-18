@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 
 //;
 
@@ -34,15 +33,12 @@ pub const VM = struct {
         ReturnStackUnderflow,
         ReturnStackOverflow,
         WordTooLong,
-        // TODO dont need
-        NoInputBuffer,
         WordNotFound,
-        EndOfInput,
         InvalidNumber,
         ExecutionError,
         AlignmentError,
-        // TODO dont need
-        NoInputSource,
+
+        EndOfInput,
     } || Allocator.Error;
 
     pub const baseLib = @embedFile("base.fs");
@@ -78,21 +74,17 @@ pub const VM = struct {
 
     const file_read_flag = 0x1;
     const file_write_flag = 0x2;
+    const file_included_max_size = 64 * 1024;
+
+    const source_id_string = std.math.maxInt(Cell);
+    const source_id_user_input = 0;
 
     pub const ParseNumberResult = union(enum) {
         Float: Float,
         Cell: Cell,
     };
 
-    pub const Source = struct {
-        str: []u8,
-        pos: usize,
-        owns_str: bool,
-    };
-
     allocator: *Allocator,
-
-    input_stack: ArrayList(Source),
 
     // execution
     last_next: Cell,
@@ -114,12 +106,14 @@ pub const VM = struct {
     sp: Cell,
     rsp: Cell,
     fsp: Cell,
+    source: Cell,
+    source_id: Cell,
+    source_len: Cell,
+    source_in: Cell,
     stack: [*]Cell,
     rstack: [*]Cell,
     fstack: [*]Float,
     input_buffer: [*]u8,
-    input_buffer_pos: Cell,
-    input_buffer_len: Cell,
     dictionary: [*]u8,
 
     word_not_found: []u8,
@@ -128,7 +122,6 @@ pub const VM = struct {
         var ret: Self = undefined;
 
         ret.allocator = allocator;
-        ret.input_stack = std.ArrayList(Source).init(allocator);
         ret.last_next = 0;
         ret.next = 0;
 
@@ -147,12 +140,23 @@ pub const VM = struct {
         ret.sp = @ptrToInt(ret.stack);
         ret.rsp = @ptrToInt(ret.rstack);
         ret.fsp = @ptrToInt(ret.fstack);
-        ret.input_buffer_pos = 0;
-        ret.input_buffer_len = 0;
+        ret.source_id = source_id_user_input;
+        ret.source = 0;
+        ret.source_len = 0;
+        ret.source_in = 0;
 
         // TODO make all this () catch unreachable;
         try ret.initBuiltins();
-        try ret.readInput(baseLib);
+
+        var f = try allocator.create(std.fs.File);
+        defer allocator.destroy(f);
+        var file = std.fs.cwd().openFile("src/base.fs", .{ .read = true }) catch unreachable;
+        defer file.close();
+        f.* = file;
+
+        ret.source_id = @ptrToInt(f);
+        try ret.refill();
+        _ = try ret.pop();
         ret.interpret() catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {}\n", .{ret.word_not_found});
@@ -165,12 +169,6 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.input_stack.items) |src| {
-            if (src.owns_str) {
-                self.allocator.free(src.str);
-            }
-        }
-        self.input_stack.deinit();
         self.allocator.free(self.mem);
     }
 
@@ -269,8 +267,8 @@ pub const VM = struct {
 
         try self.createBuiltin("litstring", 0, &litString);
         try self.createBuiltin("type", 0, &type_);
-        try self.createBuiltin("key", 0, &key);
-        try self.createBuiltin("key?", 0, &keyAvailable);
+        // try self.createBuiltin("key", 0, &key);
+        // try self.createBuiltin("key?", 0, &keyAvailable);
         try self.createBuiltin("char", 0, &char);
         try self.createBuiltin("emit", 0, &emit);
 
@@ -303,9 +301,9 @@ pub const VM = struct {
         try self.createBuiltin("read-file", 0, &fileRead);
         try self.createBuiltin("read-line", 0, &fileReadLine);
 
-        try self.createBuiltin("source", 0, &source);
-        // try self.createBuiltin("included", 0, &interpretInternal);
-        try self.createBuiltin("interpret", 0, &interpretString);
+        try self.createBuiltin("source", 0, &getSource);
+        try self.createBuiltin(">in", 0, &getIn);
+        try self.createBuiltin("refill", 0, &refill);
     }
 
     //;
@@ -422,99 +420,102 @@ pub const VM = struct {
         @intToPtr(*Float, addr).* = val;
     }
 
-    // TODO maybe dont copy the buffer into memory here
-    pub fn readInput(self: *Self, buf: []const u8) Allocator.Error!void {
-        try self.input_stack.append(.{
-            .str = try self.allocator.dupe(u8, buf),
-            .pos = 0,
-            .owns_str = true,
-        });
-    }
-
-    // TODO use this instead of readInput
-    pub fn pushInput(self: *Self, buf: []const u8) Allocator.Error!void {
-        try self.input_stack.append(.{
-            .str = try self.allocator.dupe(u8, buf),
-            .pos = 0,
-            .owns_str = true,
-        });
-    }
-
-    pub fn dropInput(self: *Self) Error!void {
-        if (self.currentInput()) |input| {
-            if (input.owns_str) {
-                self.allocator.free(input.str);
-            }
-            self.input_stack.items.len -= 1;
-        } else {
-            return error.EndOfInput;
-        }
-    }
-
-    pub fn nextChar(self: *Self) Error!u8 {
-        while (self.currentInput()) |input| {
-            if (input.pos >= input.str.len) {
-                try self.dropInput();
-                continue;
-            }
-            const ch = input.str[input.pos];
-            input.pos += 1;
-            return ch;
-        }
-
-        return error.EndOfInput;
-    }
-
-    // TODO unused
-    pub fn nextLine(self: *Self) Error!void {
-        var ch = try self.nextChar();
-
-        self.input_buffer_pos = 0;
-        while (ch != '\n') : (ch = try self.nextChar()) {
-            self.input_buffer[self.input_buffer_pos] = ch;
-            self.input_buffer_pos += 1;
-        }
-    }
-
-    pub fn nextWord(self: *Self) Error![]u8 {
-        if (self.currentInput()) |input| {
-            while (true) {
-                const ch = try self.nextChar();
-                if (ch == ' ' or ch == '\n') {
-                    continue;
-                } else if (ch == '\\') {
-                    while (true) {
-                        if ((try self.nextChar()) == '\n') {
-                            break;
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            const start_idx = input.pos - 1;
-            var len: Cell = 1;
-
-            while (true) {
-                const ch = try self.nextChar();
-                if (ch == ' ' or ch == '\n') {
-                    break;
-                }
-
-                if (len >= word_max_len) {
-                    return error.WordTooLong;
-                }
-
-                len += 1;
-            }
-
-            return input.str[start_idx..(start_idx + len)];
-        } else {
-            return error.NoInputBuffer;
-        }
-    }
-
+    //     // TODO maybe dont copy the buffer into memory here
+    //     pub fn readInput(self: *Self, buf: []const u8) Allocator.Error!void {
+    //         try self.input_stack.append(.{
+    //             .str = try self.allocator.dupe(u8, buf),
+    //             .pos = 0,
+    //             .owns_str = true,
+    //         });
+    //     }
+    //
+    //     // TODO use this instead of readInput
+    //     pub fn pushInput(self: *Self, buf: []const u8) Allocator.Error!void {
+    //         try self.input_stack.append(.{
+    //             .str = try self.allocator.dupe(u8, buf),
+    //             .pos = 0,
+    //             .owns_str = true,
+    //         });
+    //     }
+    //
+    //     pub fn dropInput(self: *Self) Error!void {
+    //         if (self.currentInput()) |input| {
+    //             if (input.owns_str) {
+    //                 self.allocator.free(input.str);
+    //             }
+    //             self.input_stack.items.len -= 1;
+    //         } else {
+    //             return error.EndOfInput;
+    //         }
+    //     }
+    //
+    //     pub fn nextChar(self: *Self) Error!u8 {
+    //         if (self.currentInput()) |input| {
+    //             if (input.pos >= input.str.len) {
+    //                 return error.EndOfInput;
+    //             }
+    //             const ch = input.str[input.pos];
+    //             input.pos += 1;
+    //             return ch;
+    //         } else {
+    //             return error.EmptyInputStack;
+    //         }
+    //     }
+    //
+    //     // TODO unused
+    //     pub fn nextLine(self: *Self) Error!void {
+    //         var ch = try self.nextChar();
+    //
+    //         self.input_buffer_pos = 0;
+    //         while (ch != '\n') : (ch = try self.nextChar()) {
+    //             self.input_buffer[self.input_buffer_pos] = ch;
+    //             self.input_buffer_pos += 1;
+    //         }
+    //     }
+    //
+    //     pub fn nextWord(self: *Self) Error![]u8 {
+    //         if (self.currentInput()) |input| {
+    //             while (true) {
+    //                 const ch = try self.nextChar();
+    //                 if (ch == ' ' or ch == '\n') {
+    //                     continue;
+    //                 } else if (ch == '\\') {
+    //                     while (true) {
+    //                         if ((try self.nextChar()) == '\n') {
+    //                             break;
+    //                         }
+    //                     }
+    //                 } else {
+    //                     break;
+    //                 }
+    //             }
+    //
+    //             const start_idx = input.pos - 1;
+    //             var len: Cell = 1;
+    //
+    //             while (true) {
+    //                 const ch = self.nextChar() catch |err| switch (err) {
+    //                     error.EndOfInput => break,
+    //                     else => return err,
+    //                 };
+    //
+    //                 if (ch == ' ' or ch == '\n') {
+    //                     break;
+    //                 }
+    //
+    //                 if (len >= word_max_len) {
+    //                     return error.WordTooLong;
+    //                 }
+    //
+    //                 len += 1;
+    //             }
+    //
+    //             return input.str[start_idx..(start_idx + len)];
+    //         } else {
+    //             return error.EmptyInputStack;
+    //         }
+    //     }
+    //
     // TODO rename/refactor somehow
     // slice at
     pub fn stringAt(addr: Cell, len: Cell) []u8 {
@@ -707,13 +708,13 @@ pub const VM = struct {
         }
     }
 
-    pub fn currentInput(self: *Self) ?*Source {
-        if (self.input_stack.items.len == 0) {
-            return null;
-        } else {
-            return &self.input_stack.items[self.input_stack.items.len - 1];
-        }
-    }
+    //     pub fn currentInput(self: *Self) ?*Source {
+    //         if (self.input_stack.items.len == 0) {
+    //             return null;
+    //         } else {
+    //             return &self.input_stack.items[self.input_stack.items.len - 1];
+    //         }
+    //     }
 
     // ===
 
@@ -748,23 +749,25 @@ pub const VM = struct {
     pub fn interpret(self: *Self) Error!void {
         self.should_bye = false;
         while (!self.should_bye) {
-            const is_compiling = self.state != forth_false;
-
-            self.word() catch |err| switch (err) {
-                error.EndOfInput => {
-                    self.should_bye = true;
-                    continue;
-                },
-                else => return err,
-            };
-            // self.currentInput().?.pos += 1;
+            try self.word();
             const word_len = try self.idx(0);
             const word_addr = try self.idx(1);
+            if (word_len == 0) {
+                _ = try self.pop();
+                _ = try self.pop();
+                try self.refill();
+                const res = try self.pop();
+                if (res == forth_false) {
+                    self.should_bye = true;
+                }
+                continue;
+            }
 
             try self.find();
 
             const was_found = try self.pop();
             const addr = try self.pop();
+            const is_compiling = self.state != forth_false;
             if (was_found == forth_true) {
                 const flags = wordHeaderFlags(addr).*;
                 const is_immediate = (flags & word_immediate_flag) != 0;
@@ -807,6 +810,52 @@ pub const VM = struct {
             }
         }
         self.should_bye = false;
+    }
+
+    pub fn nextChar(self: *Self) Error!u8 {
+        if (self.source_in >= self.source_len) {
+            return error.EndOfInput;
+        }
+        const ch = self.checkedReadByte(self.source + self.source_in);
+        self.source_in += 1;
+        return ch;
+    }
+
+    pub fn word(self: *Self) Error!void {
+        var ch: u8 = ' ';
+        while (ch == ' ' or ch == '\n') {
+            ch = self.nextChar() catch |err| switch (err) {
+                error.EndOfInput => {
+                    try self.push(0);
+                    try self.push(0);
+                    return;
+                },
+                else => return err,
+            };
+        }
+
+        const start_idx = self.source_in - 1;
+        var len: Cell = 1;
+
+        while (true) {
+            ch = self.nextChar() catch |err| switch (err) {
+                error.EndOfInput => break,
+                else => return err,
+            };
+
+            if (ch == ' ' or ch == '\n') {
+                break;
+            }
+
+            if (len >= word_max_len) {
+                return error.WordTooLong;
+            }
+
+            len += 1;
+        }
+
+        try self.push(self.source + start_idx);
+        try self.push(len);
     }
 
     // builtins
@@ -1030,11 +1079,11 @@ pub const VM = struct {
         }
     }
 
-    pub fn word(self: *Self) Error!void {
-        const slc = try self.nextWord();
-        try self.push(@ptrToInt(slc.ptr));
-        try self.push(slc.len);
-    }
+    //     pub fn word(self: *Self) Error!void {
+    //         const slc = try self.nextWord();
+    //         try self.push(@ptrToInt(slc.ptr));
+    //         try self.push(slc.len);
+    //     }
 
     pub fn find(self: *Self) Error!void {
         const len = try self.pop();
@@ -1297,18 +1346,20 @@ pub const VM = struct {
         std.debug.print("{}", .{stringAt(addr, len)});
     }
 
-    pub fn key(self: *Self) Error!void {
-        const ch = try self.nextChar();
-        try self.push(ch);
-    }
-
-    pub fn keyAvailable(self: *Self) Error!void {
-        if (self.currentInput()) |input| {
-            try self.push(if (input.pos < input.str.len) forth_true else forth_false);
-        } else {
-            try self.push(forth_false);
-        }
-    }
+    //     pub fn key(self: *Self) Error!void {
+    //         // TODO handle end of input
+    //         const ch = try self.nextChar();
+    //         try self.push(ch);
+    //     }
+    //
+    //     pub fn keyAvailable(self: *Self) Error!void {
+    //         // TODO
+    //         //         if (self.currentInput()) |input| {
+    //         //             try self.push(if (input.pos < input.str.len) forth_true else forth_false);
+    //         //         } else {
+    //         //             try self.push(forth_false);
+    //         //         }
+    //     }
 
     pub fn char(self: *Self) Error!void {
         try self.word();
@@ -1558,19 +1609,88 @@ pub const VM = struct {
 
     // ===
 
-    pub fn source(self: *Self) Error!void {
-        const input = self.currentInput().?;
-        try self.push(@ptrToInt(input.str.ptr));
-        try self.push(input.str.len);
+    pub fn getSource(self: *Self) Error!void {
+        try self.push(self.source);
+        try self.push(self.source_len);
     }
 
-    pub fn interpretString(self: *Self) Error!void {
-        const n = try self.pop();
-        const addr = try self.pop();
-        try self.input_stack.append(.{
-            .str = stringAt(addr, n),
-            .pos = 0,
-            .owns_str = false,
-        });
+    pub fn getIn(self: *Self) Error!void {
+        try self.push(@ptrToInt(&self.source_in));
     }
+
+    pub fn refill(self: *Self) Error!void {
+        switch (self.source_id) {
+            source_id_string => {
+                try self.push(forth_false);
+            },
+            source_id_user_input => {
+                var reader = std.io.getStdIn().reader();
+                var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
+                    switch (err) {
+                        // TODO
+                        error.StreamTooLong => unreachable,
+                        // TODO
+                        else => unreachable,
+                    }
+                };
+                if (line) |s| {
+                    self.source = @ptrToInt(self.input_buffer);
+                    self.source_in = 0;
+                    self.source_len = s.len;
+                    try self.push(forth_true);
+                } else {
+                    try self.push(forth_false);
+                }
+            },
+            else => |id| {
+                var file = @intToPtr(*std.fs.File, id);
+                var reader = file.reader();
+                const line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
+                    switch (err) {
+                        // TODO
+                        error.StreamTooLong => unreachable,
+                        // TODO
+                        else => unreachable,
+                    }
+                };
+                if (line) |s| {
+                    self.source = @ptrToInt(self.input_buffer);
+                    self.source_in = 0;
+                    self.source_len = s.len;
+                    try self.push(forth_true);
+                } else {
+                    try self.push(forth_false);
+                }
+            },
+        }
+    }
+
+    //     pub fn interpretString(self: *Self) Error!void {
+    //         const n = try self.pop();
+    //         const addr = try self.pop();
+    //         try self.input_stack.append(.{
+    //             .str = stringAt(addr, n),
+    //             .pos = 0,
+    //             .owns_str = false,
+    //         });
+    //     }
+    //
+    //     // TODO note this only works while interpreting, same as above word
+    //     pub fn included(self: *Self) Error!void {
+    //         try self.fileRO();
+    //         try self.fileOpen();
+    //         // TODO
+    //         _ = try self.pop();
+    //         const f = try self.pop();
+    //         var ptr = @intToPtr(*std.fs.File, f);
+    //
+    //         const slc = ptr.readToEndAlloc(self.allocator, file_included_max_size) catch unreachable;
+    //         try self.input_stack.append(.{
+    //             .str = slc,
+    //             .pos = 0,
+    //             .owns_str = true,
+    //         });
+    //         try self.push(f);
+    //         try self.fileClose();
+    //     }
 };

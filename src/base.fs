@@ -1,6 +1,3 @@
-\ TODO
-\ [if] [else] [then]
-
 here @
 word : define
 ' docol ,
@@ -21,10 +18,14 @@ word ; define
 latest !
 latest @ make-immediate
 
-\ ===
-
 : immediate latest @ make-immediate ; immediate
 : hidden latest @ hide ; immediate
+
+: \ source nip >in ! ; immediate
+
+: next-char
+  source drop >in @ + c@
+  >in @ 1 + >in ! ;
 
 \ ===
 
@@ -110,19 +111,9 @@ latest @ make-immediate
 \ ===
 
 : (
-  1
   begin
-    key dup [char] ( = if
-      drop
-      1+
-    else
-      [char] ) = if
-        1-
-      then
-    then
-  dup 0= until
-  drop
-  ; immediate
+    next-char [char] ) =
+  until ; immediate
 
 : case
   0 ; immediate
@@ -204,10 +195,12 @@ latest @ make-immediate
   ; immediate
 
 : [defined]
-  word find nip ;
+  word find nip
+  ; immediate
 
 : [undefined]
-  [compile] [defined] 0= ;
+  [compile] [defined] 0=
+  ; immediate
 
 \ ===
 
@@ -223,7 +216,7 @@ latest @ make-immediate
 : immediate?
   >flags flag,immediate and ;
 
-\ todo maybe change to have normal arg order
+\ todo change to have normal arg order
 : within     ( val max min -- t/f )
   >r over r> ( val max val min )
   >= -rot < and ;
@@ -272,6 +265,7 @@ latest @ make-immediate
   create ,
   does> @ ;
 
+\ todo rename
 : value.field ( val-addr -- field-addr )
   >cfa 2 cells + ;
 
@@ -344,7 +338,7 @@ latest @ make-immediate
 
 : read-string-into-memory ( start-addr -- end-addr )
   begin
-    key
+    next-char
     dup [char] " <>
   while
     over c!
@@ -352,7 +346,7 @@ latest @ make-immediate
   repeat
   drop ;
 
-: s" ( ( c: -- ) ( i: -- addr len ) )
+: s" \ ( c: -- ) ( i: -- addr len )
   state @ if
     ['] litstring ,
     here @ 0 ,
@@ -385,17 +379,17 @@ latest @ make-immediate
   endcase ;
 
 : read-byte ( -- byte )
-  key key
+  next-char next-char
   char>digit swap char>digit 16 * + ;
 
 : read-escaped-string-into-memory ( start-addr -- end-addr )
   begin
-    key
+    next-char
     dup [char] " <>
   while
     dup backslash = if
       drop
-      key
+      next-char
       \ TODO
       \ [char] m of 13 10 ( cr lf )
       \ \n does cr lf on windows
@@ -424,7 +418,7 @@ latest @ make-immediate
   repeat
   drop ;
 
-: s\" ( ( c: -- ) ( i: -- addr len ) )
+: s\" \ ( c: -- ) ( i: -- addr len )
   state @ if
     ['] litstring ,
     here @ 0 ,
@@ -452,15 +446,14 @@ latest @ make-immediate
       s" [then]" string= -rot
       s" [else]" string= or
     until
-  then ;
+  then ; immediate
 
 : [else]
   begin
     word s" [then]" string=
-  until ;
+  until ; immediate
 
-: [then] ;
-
+: [then] ; immediate
 
 \ ===
 
@@ -683,91 +676,3 @@ create u.buffer 8 cell * allot
 
 : enum ( value "name" -- value+1 )
   dup constant 1+ ;
-
-(
-
-:noname 1 2 .s cr + . cr ;
-execute
-1 ' dup execute .s cr
-
-: fn
-  1 2
-  5000000 0 ?do
-    swap
-  loop ;
-
-fn
-
-create hello 5 c,
-: hello2 5 ;
-hello2
-
-' does> cfa> drop 13 dump
-
-
- : looper
-   5 0 ?do
-     5 0 ?do
-       1 0 ?do
-         [char] A i + emit bl emit
-         [char] A j + emit bl emit
-         [char] A k + emit cr
-       loop
-     loop
-   loop
-   ;
-
-
-looper
-.s
-bye
-
-: looper
-  5 0
-  >r >r begin
-  r> r> 2dup = 0= -rot >r >r while
-    [char] * emit cr
-  r> r> 1+ >r >r repeat
-  r> r> 2drop ;
-
-32 allocate .s
-drop
-dup 0 + char h swap c!
-dup 1 + char e swap c!
-dup 2 + char l swap c!
-dup 3 + char l swap c!
-dup 4 + char o swap c!
-dup 5 type cr
-free
-
-unused
-
-5 constant something
-
-unused cell /
-
-.s
-
--
-here @
-dictionary
--
-cell /
-.s
-
-bye
-
-5 constant wowo
-wowo .s
-
-' wowo >body dup @ .s
-
-10 create something ,
-does> @ 2 + ;
-
-something .s
-
-10 3 /
-10 3 mod
-.s
-)
