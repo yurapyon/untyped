@@ -203,6 +203,12 @@ latest @ make-immediate
   ['] @ ,
   ; immediate
 
+: [defined]
+  word find nip ;
+
+: [undefined]
+  [compile] [defined] 0= ;
+
 \ ===
 
 : >name ( word-addr -- addr len )
@@ -432,6 +438,29 @@ latest @ make-immediate
     here @ -
   then
   ; immediate
+
+: string= ( a alen b blen -- t/f )
+  rot over = 0= if 3drop false exit then
+  mem= ;
+
+\ ===
+
+: [if]
+  0= if
+    begin
+      word 2dup
+      s" [then]" string= -rot
+      s" [else]" string= or
+    until
+  then ;
+
+: [else]
+  begin
+    word s" [then]" string=
+  until ;
+
+: [then] ;
+
 
 \ ===
 
