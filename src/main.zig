@@ -52,6 +52,13 @@ pub fn demo(allocator: *Allocator) !void {
 
     vm.source_type = .UserInput;
     vm.source_ptr = 0;
+    vm.interpret() catch |err| switch (err) {
+        error.WordNotFound => {
+            std.debug.print("word not found: {}\n", .{vm.word_not_found});
+            return err;
+        },
+        else => return err,
+    };
 }
 
 test "" {

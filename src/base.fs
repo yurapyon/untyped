@@ -262,24 +262,32 @@ latest @ make-immediate
   does> @ ;
 
 \ todo rename
-: value.field ( val-addr -- field-addr )
+: >value-data ( val-addr -- data-addr )
   >cfa 2 cells + ;
 
 : value
   word define
   ['] docol ,
-  ['] lit ,
-  ,
+  ['] lit , ,
   ['] exit , ;
 
 : to
-  word find drop value.field
+  word find drop >value-data
   state @ if
-    ['] lit ,
-    ,
+    ['] lit , ,
     ['] ! ,
   else
     !
+  then
+  ; immediate
+
+: +to
+  word find drop >value-data
+  state @ if
+    ['] lit , ,
+    ['] +! ,
+  else
+    +!
   then
   ; immediate
 
@@ -672,3 +680,73 @@ create u.buffer 8 cell * allot
 
 : enum ( value "name" -- value+1 )
   dup constant 1+ ;
+
+\ ===
+
+: interpret ( -- )
+  word dup 0= if
+    refill 0= if
+      exit
+    then
+    2drop tailcall recurse
+  then
+  2dup find if
+    dup immediate? 0= state @ and if
+      >cfa ,
+      2drop
+    else
+      >cfa -rot >r >r execute r> r>
+    then
+    tailcall recurse
+  else
+    drop
+    2dup >number if
+      -rot 2drop tailcall recurse
+    else
+      drop
+      2dup >float if
+        2drop tailcall recurse
+      else
+        fdrop
+        \ todo better error
+        ." word not found: " type cr
+        bye
+      then
+    then
+  then ;
+
+0 cell field saved-source.type
+  cell field saved-source.ptr
+  cell field saved-source.len
+  cell field saved-source.in
+constant saved-source
+
+create include-buf 8 saved-source * allot
+0 value include-buf-at
+
+: save-input
+  \ include-buf include-buf-at saved-source * +
+  \ dup saved-source.type source-type @ swap !
+  \ dup saved-source.ptr source-ptr @ swap !
+  \ dup saved-source.len source-len @ swap !
+  \ dup saved-source.in >in @ swap !
+  \ 1 +to include-buf-at
+  ;
+
+: restore-input
+  \ include-buf include-buf-at saved-source * +
+  \ dup saved-source.type @ source-type !
+  \     saved-source.ptr @ source-ptr !
+  \ -1 +to include-buf-at
+  ;
+
+: evaluate
+  save-input
+  restore-input
+  ;
+
+: included ( file-name-addr n -- )
+  save-input
+  open-file drop
+  restore-input
+  ;

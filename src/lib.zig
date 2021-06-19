@@ -4,17 +4,15 @@ const Allocator = std.mem.Allocator;
 //;
 
 // TODO
-// float stack
-// instead of line_buf_len should it be a ptr to the top
 // key? (keyAvailable)
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
-// would be nice to be able to write repl in forth itself
-//   need read/parse
 // 2c, 4c,
 // `nextname`
-// input stack is needed for loading and executing files
+// better error reporting
+
+// ===
 
 // stack pointers point to 1 beyond the top of the stack
 //   should i keep it this way?
@@ -25,16 +23,22 @@ pub const VM = struct {
     const Self = @This();
 
     pub const Error = error{
-        // TODO specialize these errors per stack
         StackUnderflow,
         StackOverflow,
         StackIndexOutOfRange,
 
         ReturnStackUnderflow,
         ReturnStackOverflow,
+        ReturnStackIndexOutOfRange,
+
+        FloatStackUnderflow,
+        FloatStackOverflow,
+        FloatStackIndexOutOfRange,
+
         WordTooLong,
         WordNotFound,
         InvalidNumber,
+        InvalidFloat,
         ExecutionError,
         AlignmentError,
 
@@ -76,24 +80,24 @@ pub const VM = struct {
     const file_write_flag = 0x2;
     const file_included_max_size = 64 * 1024;
 
-    const SourceType = enum(Cell) {
-        String,
-        UserInput,
-        InMemory,
-        File,
-    };
-
-    const InMemory = struct {
-        buf: []const u8,
-        stream: std.io.FixedBufferStream([]const u8),
-
-        pub fn init(buf: []const u8) InMemory {
-            return .{
-                .buf = buf,
-                .stream = std.io.fixedBufferStream(buf),
-            };
-        }
-    };
+    //     const SourceType = enum(Cell) {
+    //         String,
+    //         UserInput,
+    //         InMemory,
+    //         File,
+    //     };
+    //
+    //     const InMemory = struct {
+    //         buf: []const u8,
+    //         stream: std.io.FixedBufferStream([]const u8),
+    //
+    //         pub fn init(buf: []const u8) InMemory {
+    //             return .{
+    //                 .buf = buf,
+    //                 .stream = std.io.fixedBufferStream(buf),
+    //             };
+    //         }
+    //     };
 
     pub const ParseNumberResult = union(enum) {
         Float: Float,
@@ -122,11 +126,18 @@ pub const VM = struct {
     sp: Cell,
     rsp: Cell,
     fsp: Cell,
-    source: Cell,
-    source_type: SourceType,
+
+    // source of string/current line
+    // source: Cell,
+    // source_type: SourceType,
+    // source_ptr: Cell,
+    // source_len: Cell,
+    // source_in: Cell,
+
     source_ptr: Cell,
     source_len: Cell,
     source_in: Cell,
+
     stack: [*]Cell,
     rstack: [*]Cell,
     fstack: [*]Float,
@@ -157,11 +168,11 @@ pub const VM = struct {
         ret.sp = @ptrToInt(ret.stack);
         ret.rsp = @ptrToInt(ret.rstack);
         ret.fsp = @ptrToInt(ret.fstack);
-        ret.source_type = .UserInput;
-        ret.source_ptr = 0;
-        ret.source = 0;
-        ret.source_len = 0;
-        ret.source_in = 0;
+        //         ret.source_type = .UserInput;
+        //         ret.source_ptr = 0;
+        //         ret.source = 0;
+        //         ret.source_len = 0;
+        //         ret.source_in = 0;
 
         // TODO make all this () catch unreachable;
         try ret.initBuiltins();
@@ -171,12 +182,16 @@ pub const VM = struct {
         //         var file = std.fs.cwd().openFile("src/base.fs", .{ .read = true }) catch unreachable;
         //         defer file.close();
         //         f.* = file;
-        var m = try allocator.create(InMemory);
-        defer allocator.destroy(m);
-        m.* = InMemory.init(baseLib[0..]);
 
-        ret.source_type = .InMemory;
-        ret.source_ptr = @ptrToInt(m);
+        // var m = try allocator.create(InMemory);
+        // defer allocator.destroy(m);
+        // m.* = InMemory.init(baseLib[0..]);
+
+        // ret.source_type = .InMemory;
+
+        ret.source_ptr = @ptrToInt(&baseLib[0]);
+        ret.source_len = @ptrToInt(baseLib.len);
+        ret.source_in = 0;
         ret.interpret() catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {}\n", .{ret.word_not_found});
@@ -200,7 +215,7 @@ pub const VM = struct {
         self.lit_address = wordHeaderCodeFieldAddress(self.latest);
         try self.createBuiltin("litfloat", 0, &litFloat);
         self.litFloat_address = wordHeaderCodeFieldAddress(self.latest);
-        try self.createBuiltin("execute", 0, &executeInternal);
+        try self.createBuiltin("execute", 0, &executeForth);
         try self.createBuiltin("quit", 0, &quit);
         self.quit_address = wordHeaderCodeFieldAddress(self.latest);
         try self.createBuiltin("bye", 0, &bye);
@@ -258,7 +273,7 @@ pub const VM = struct {
         try self.createBuiltin("make-immediate", 0, &makeImmediate);
         try self.createBuiltin("hide", 0, &hide);
 
-        try self.createBuiltin(">cfa", 0, &cfa_);
+        try self.createBuiltin(">cfa", 0, &getCfa);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
 
@@ -282,7 +297,7 @@ pub const VM = struct {
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
-        // try self.createBuiltin("number", 0, &number);
+        try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
 
         try self.createBuiltin(".s", 0, &showStack);
@@ -302,18 +317,23 @@ pub const VM = struct {
         try self.createBuiltin("mem=", 0, &memEql);
 
         // TODO float comparisons
+        // TODO fix these names
         try self.createBuiltin("f.", 0, &fPrint);
         try self.createBuiltin("f+", 0, &fplus);
         try self.createBuiltin("f-", 0, &fminus);
         try self.createBuiltin("f*", 0, &ftimes);
         try self.createBuiltin("f/", 0, &fdivide);
         try self.createBuiltin("float", 0, &fSize);
-        try self.createBuiltin("fsin", 0, &fSize);
+        // try self.createBuiltin("fsin", 0, &fSize);
         try self.createBuiltin("pi", 0, &pi);
         try self.createBuiltin("tau", 0, &tau);
         try self.createBuiltin("f@", 0, &fetchFloat);
         try self.createBuiltin("f!", 0, &storeFloat);
         try self.createBuiltin("f,", 0, &commaFloat);
+        try self.createBuiltin(">float", 0, &parseFloatForth);
+        try self.createBuiltin("fdrop", 0, &fDrop);
+        try self.createBuiltin("fdup", 0, &fDup);
+        try self.createBuiltin("fswap", 0, &fSwap);
 
         try self.createBuiltin("r/o", 0, &fileRO);
         try self.createBuiltin("w/o", 0, &fileWO);
@@ -323,9 +343,9 @@ pub const VM = struct {
         try self.createBuiltin("read-file", 0, &fileRead);
         try self.createBuiltin("read-line", 0, &fileReadLine);
 
-        try self.createBuiltin("source", 0, &getSource);
-        try self.createBuiltin(">in", 0, &getIn);
-        try self.createBuiltin("refill", 0, &refill);
+        // try self.createBuiltin("source", 0, &getSource);
+        // try self.createBuiltin(">in", 0, &getIn);
+        // try self.createBuiltin("refill", 0, &refill);
     }
 
     //;
@@ -357,7 +377,7 @@ pub const VM = struct {
 
     pub fn rpop(self: *Self) Error!Cell {
         if (self.rsp <= @ptrToInt(self.rstack)) {
-            return error.StackUnderflow;
+            return error.ReturnStackUnderflow;
         }
         self.rsp -= @sizeOf(Cell);
         const ret = @intToPtr(*const Cell, self.rsp).*;
@@ -366,15 +386,17 @@ pub const VM = struct {
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
         if (self.rsp >= @ptrToInt(self.rstack) + rstack_size) {
-            return error.StackOverflow;
+            return error.ReturnStackOverflow;
         }
         @intToPtr(*Cell, self.rsp).* = val;
         self.rsp += @sizeOf(Cell);
     }
 
+    // TODO ridx
+
     pub fn fpop(self: *Self) Error!Float {
         if (self.fsp <= @ptrToInt(self.fstack)) {
-            return error.StackUnderflow;
+            return error.FloatStackUnderflow;
         }
         self.fsp -= @sizeOf(Float);
         const ret = @intToPtr(*const Float, self.fsp).*;
@@ -383,11 +405,13 @@ pub const VM = struct {
 
     pub fn fpush(self: *Self, val: Float) Error!void {
         if (self.fsp >= @ptrToInt(self.fstack) + fstack_size) {
-            return error.StackOverflow;
+            return error.FloatStackOverflow;
         }
         @intToPtr(*Float, self.fsp).* = val;
         self.fsp += @sizeOf(Float);
     }
+
+    // TODO fidx
 
     //;
 
@@ -456,35 +480,10 @@ pub const VM = struct {
         return if (off_aligned == @alignOf(T)) addr else addr + off_aligned;
     }
 
-    pub fn parseNumber(str: []const u8, base_: Cell) Error!ParseNumberResult {
-        var is_negative = false;
-        var acc: Cell = 0;
+    pub fn parseNumber(str: []const u8, base_: Cell) Error!Cell {
+        var is_negative: bool = false;
         var read_at: usize = 0;
-
-        if (str[str.len - 1] == 'f') {
-            // dont allow f
-            if (str.len == 1) {
-                return error.InvalidNumber;
-            }
-            // only allow 0-9 - .
-            for (str[0..(str.len - 1)]) |ch| {
-                switch (ch) {
-                    '0'...'9', '.', '+', '-' => {},
-                    else => return error.InvalidNumber,
-                }
-            }
-            // dont allow .f +f -f
-            if (str.len == 2 and
-                (str[0] == '.' or str[0] == '+' or str[0] == '-'))
-            {
-                return error.InvalidNumber;
-            }
-
-            const fl = std.fmt.parseFloat(Float, str[0..(str.len - 1)]) catch |_| {
-                return error.InvalidNumber;
-            };
-            return ParseNumberResult{ .Float = fl };
-        }
+        var acc: Cell = 0;
 
         if (str[0] == '-') {
             is_negative = true;
@@ -505,7 +504,26 @@ pub const VM = struct {
             acc = acc * base_ + digit;
         }
 
-        return ParseNumberResult{ .Cell = if (is_negative) 0 -% acc else acc };
+        return if (is_negative) 0 -% acc else acc;
+    }
+
+    pub fn parseFloat(str: []const u8) Error!Float {
+        for (str) |ch| {
+            switch (ch) {
+                '0'...'9', '.', '+', '-' => {},
+                else => return error.InvalidFloat,
+            }
+        }
+        if (str.len == 1 and
+            (str[0] == '+' or
+            str[0] == '-' or
+            str[0] == '.'))
+        {
+            return error.InvalidFloat;
+        }
+        return std.fmt.parseFloat(Float, str) catch |_| {
+            return error.InvalidFloat;
+        };
     }
 
     pub fn pushString(self: *Self, str: []const u8) Error!void {
@@ -689,37 +707,32 @@ pub const VM = struct {
             if (was_found == forth_true) {
                 const flags = wordHeaderFlags(addr).*;
                 const is_immediate = (flags & word_immediate_flag) != 0;
-                const cfa = wordHeaderCodeFieldAddress(addr);
+                const xt = wordHeaderCodeFieldAddress(addr);
                 if (is_compiling and !is_immediate) {
-                    try self.push(cfa);
+                    try self.push(xt);
                     try self.comma();
                 } else {
-                    try self.execute(cfa);
+                    try self.execute(xt);
                 }
             } else {
                 var str = stringAt(word_addr, word_len);
-                const maybe_num = parseNumber(str, self.base) catch null;
-                if (maybe_num) |num| {
+                if (parseNumber(str, self.base) catch null) |num| {
                     if (is_compiling) {
-                        switch (num) {
-                            .Cell => |c| {
-                                try self.push(self.lit_address);
-                                try self.comma();
-                                try self.push(c);
-                                try self.comma();
-                            },
-                            .Float => |f| {
-                                try self.push(self.litFloat_address);
-                                try self.comma();
-                                try self.push(floatToCell(f));
-                                try self.comma();
-                            },
-                        }
+                        try self.push(self.lit_address);
+                        try self.comma();
+                        try self.push(num);
+                        try self.comma();
                     } else {
-                        switch (num) {
-                            .Cell => |c| try self.push(c),
-                            .Float => |f| try self.fpush(f),
-                        }
+                        try self.push(num);
+                    }
+                } else if (parseFloat(str) catch null) |fl| {
+                    if (is_compiling) {
+                        try self.push(self.litFloat_address);
+                        try self.comma();
+                        try self.push(floatToCell(fl));
+                        try self.comma();
+                    } else {
+                        try self.fpush(fl);
                     }
                 } else {
                     self.word_not_found = str;
@@ -738,6 +751,8 @@ pub const VM = struct {
         self.source_in += 1;
         return ch;
     }
+
+    // builtins
 
     pub fn word(self: *Self) Error!void {
         var ch: u8 = ' ';
@@ -780,8 +795,6 @@ pub const VM = struct {
         try self.push(try self.nextChar());
     }
 
-    // builtins
-
     pub fn docol(self: *Self) Error!void {
         try self.rpush(self.last_next);
         self.next = self.curr_xt + @sizeOf(Cell);
@@ -801,7 +814,7 @@ pub const VM = struct {
         self.next += @sizeOf(Cell);
     }
 
-    pub fn executeInternal(self: *Self) Error!void {
+    pub fn executeForth(self: *Self) Error!void {
         const xt = try self.pop();
         const first = @intToPtr(*Cell, xt).*;
         if (first == builtin_fn_id) {
@@ -1067,10 +1080,9 @@ pub const VM = struct {
 
         try self.find();
         if ((try self.pop()) == forth_false) {
-            self.word_not_found = stringAt(word_addr, word_len);
             return error.WordNotFound;
         }
-        try self.cfa_();
+        try self.getCfa();
     }
 
     pub fn bracketTick(self: *Self) Error!void {
@@ -1106,7 +1118,7 @@ pub const VM = struct {
         wordHeaderFlags(addr).* ^= word_hidden_flag;
     }
 
-    pub fn cfa_(self: *Self) Error!void {
+    pub fn getCfa(self: *Self) Error!void {
         const addr = try self.pop();
         try self.push(wordHeaderCodeFieldAddress(addr));
     }
@@ -1237,13 +1249,20 @@ pub const VM = struct {
         try self.push(@sizeOf(Cell));
     }
 
-    // TODO do this according to forth specs
-    //      handle floats
-    // pub fn number(self: *Self) Error!void {
-    // const len = try self.pop();
-    // const addr = try self.pop();
-    // try self.push(try parseNumber(stringAt(addr, len), self.base.*));
-    // }
+    pub fn parseNumberForth(self: *Self) Error!void {
+        const len = try self.pop();
+        const addr = try self.pop();
+        const num = parseNumber(stringAt(addr, len), self.base) catch |err| switch (err) {
+            error.InvalidNumber => {
+                try self.push(0);
+                try self.push(forth_false);
+                return;
+            },
+            else => return err,
+        };
+        try self.push(num);
+        try self.push(forth_true);
+    }
 
     pub fn plusStore(self: *Self) Error!void {
         const addr = try self.pop();
@@ -1457,6 +1476,39 @@ pub const VM = struct {
         self.here += @sizeOf(Float);
     }
 
+    pub fn parseFloatForth(self: *Self) Error!void {
+        const len = try self.pop();
+        const addr = try self.pop();
+        const str = stringAt(addr, len);
+        const fl = parseFloat(str) catch |err| switch (err) {
+            error.InvalidFloat => {
+                try self.fpush(0);
+                try self.push(forth_false);
+                return;
+            },
+            else => return err,
+        };
+        try self.fpush(fl);
+        try self.push(forth_true);
+    }
+
+    pub fn fDrop(self: *Self) Error!void {
+        _ = try self.fpop();
+    }
+
+    pub fn fDup(self: *Self) Error!void {
+        const f = try self.fpop();
+        try self.fpush(f);
+        try self.fpush(f);
+    }
+
+    pub fn fSwap(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(a);
+        try self.fpush(b);
+    }
+
     // ===
 
     pub fn fileRO(self: *Self) Error!void {
@@ -1538,50 +1590,51 @@ pub const VM = struct {
 
     // ===
 
-    pub fn getSource(self: *Self) Error!void {
-        try self.push(self.source);
-        try self.push(self.source_len);
-    }
-
-    pub fn getIn(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.source_in));
-    }
-
-    fn refillReader(self: *Self, reader: anytype) Error!void {
-        var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
-            switch (err) {
-                // TODO
-                error.StreamTooLong => unreachable,
-                // TODO
-                else => unreachable,
-            }
-        };
-        if (line) |s| {
-            self.source = @ptrToInt(self.input_buffer);
-            self.source_in = 0;
-            self.source_len = s.len;
-            try self.push(forth_true);
-        } else {
-            try self.push(forth_false);
-        }
-    }
-
-    pub fn refill(self: *Self) Error!void {
-        switch (self.source_type) {
-            .String => {
-                try self.push(forth_false);
-            },
-            .UserInput => {
-                try self.refillReader(std.io.getStdIn().reader());
-            },
-            .InMemory => {
-                var mem = @intToPtr(*InMemory, self.source_ptr);
-                try self.refillReader(mem.stream.reader());
-            },
-            .File => {
-                var file = @intToPtr(*std.fs.File, self.source_ptr);
-                try self.refillReader(file.reader());
-            },
-        }
-    }
+    //     pub fn getSource(self: *Self) Error!void {
+    //         try self.push(self.source);
+    //         try self.push(self.source_len);
+    //     }
+    //
+    //     pub fn getIn(self: *Self) Error!void {
+    //         try self.push(@ptrToInt(&self.source_in));
+    //     }
+    //
+    //     fn refillReader(self: *Self, reader: anytype) Error!void {
+    //         var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
+    //             switch (err) {
+    //                 // TODO
+    //                 error.StreamTooLong => unreachable,
+    //                 // TODO
+    //                 else => unreachable,
+    //             }
+    //         };
+    //         if (line) |s| {
+    //             self.source = @ptrToInt(self.input_buffer);
+    //             self.source_in = 0;
+    //             self.source_len = s.len;
+    //             try self.push(forth_true);
+    //         } else {
+    //             try self.push(forth_false);
+    //         }
+    //     }
+    //
+    //     pub fn refill(self: *Self) Error!void {
+    //         switch (self.source_type) {
+    //             .String => {
+    //                 try self.push(forth_false);
+    //             },
+    //             .UserInput => {
+    //                 std.debug.print("> ", .{});
+    //                 try self.refillReader(std.io.getStdIn().reader());
+    //             },
+    //             .InMemory => {
+    //                 var mem = @intToPtr(*InMemory, self.source_ptr);
+    //                 try self.refillReader(mem.stream.reader());
+    //             },
+    //             .File => {
+    //                 var file = @intToPtr(*std.fs.File, self.source_ptr);
+    //                 try self.refillReader(file.reader());
+    //             },
+    //         }
+    //     }
 };
