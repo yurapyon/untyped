@@ -23,10 +23,6 @@ latest @ make-immediate
 
 : \ source nip >in ! ; immediate
 
-: next-char
-  source drop >in @ + c@
-  >in @ 1 + >in ! ;
-
 \ ===
 
 : 2dup over over ;
@@ -321,7 +317,7 @@ latest @ make-immediate
   float align-to ;
 
 : allot ( ct -- )
-  here @ + here ! ;
+  here +! ;
 
 \ todo check this works
 : move ( src n dest )

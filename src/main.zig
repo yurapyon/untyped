@@ -31,20 +31,27 @@ pub fn demo(allocator: *Allocator) !void {
     var vm = try VM.init(allocator);
     defer vm.deinit();
 
-    //     // if (to_load) |filename| {
-    //     var f = try readFile(allocator, to_load orelse "src/test.fs");
-    //     // var f = try readFile(allocator, filename);
-    //     defer allocator.free(f);
-    //
-    //     try vm.readInput(f);
-    //     vm.interpret() catch |err| switch (err) {
-    //         error.WordNotFound => {
-    //             std.debug.print("word not found: {}\n", .{vm.word_not_found});
-    //             return err;
-    //         },
-    //         else => return err,
-    //     };
-    //     // }
+    if (to_load) |filename| {
+        var f = try allocator.create(std.fs.File);
+        defer allocator.destroy(f);
+        var file = try std.fs.cwd().openFile(filename, .{ .read = true });
+        defer file.close();
+        f.* = file;
+
+        vm.source_type = .File;
+        vm.source_ptr = @ptrToInt(f);
+
+        vm.interpret() catch |err| switch (err) {
+            error.WordNotFound => {
+                std.debug.print("word not found: {}\n", .{vm.word_not_found});
+                return err;
+            },
+            else => return err,
+        };
+    }
+
+    vm.source_type = .UserInput;
+    vm.source_ptr = 0;
 }
 
 test "" {

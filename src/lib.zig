@@ -76,8 +76,24 @@ pub const VM = struct {
     const file_write_flag = 0x2;
     const file_included_max_size = 64 * 1024;
 
-    const source_id_string = std.math.maxInt(Cell);
-    const source_id_user_input = 0;
+    const SourceType = enum(Cell) {
+        String,
+        UserInput,
+        InMemory,
+        File,
+    };
+
+    const InMemory = struct {
+        buf: []const u8,
+        stream: std.io.FixedBufferStream([]const u8),
+
+        pub fn init(buf: []const u8) InMemory {
+            return .{
+                .buf = buf,
+                .stream = std.io.fixedBufferStream(buf),
+            };
+        }
+    };
 
     pub const ParseNumberResult = union(enum) {
         Float: Float,
@@ -107,7 +123,8 @@ pub const VM = struct {
     rsp: Cell,
     fsp: Cell,
     source: Cell,
-    source_id: Cell,
+    source_type: SourceType,
+    source_ptr: Cell,
     source_len: Cell,
     source_in: Cell,
     stack: [*]Cell,
@@ -140,7 +157,8 @@ pub const VM = struct {
         ret.sp = @ptrToInt(ret.stack);
         ret.rsp = @ptrToInt(ret.rstack);
         ret.fsp = @ptrToInt(ret.fstack);
-        ret.source_id = source_id_user_input;
+        ret.source_type = .UserInput;
+        ret.source_ptr = 0;
         ret.source = 0;
         ret.source_len = 0;
         ret.source_in = 0;
@@ -148,15 +166,17 @@ pub const VM = struct {
         // TODO make all this () catch unreachable;
         try ret.initBuiltins();
 
-        var f = try allocator.create(std.fs.File);
-        defer allocator.destroy(f);
-        var file = std.fs.cwd().openFile("src/base.fs", .{ .read = true }) catch unreachable;
-        defer file.close();
-        f.* = file;
+        //         var f = try allocator.create(std.fs.File);
+        //         defer allocator.destroy(f);
+        //         var file = std.fs.cwd().openFile("src/base.fs", .{ .read = true }) catch unreachable;
+        //         defer file.close();
+        //         f.* = file;
+        var m = try allocator.create(InMemory);
+        defer allocator.destroy(m);
+        m.* = InMemory.init(baseLib[0..]);
 
-        ret.source_id = @ptrToInt(f);
-        try ret.refill();
-        _ = try ret.pop();
+        ret.source_type = .InMemory;
+        ret.source_ptr = @ptrToInt(m);
         ret.interpret() catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {}\n", .{ret.word_not_found});
@@ -220,6 +240,7 @@ pub const VM = struct {
 
         try self.createBuiltin("define", 0, &define);
         try self.createBuiltin("word", 0, &word);
+        try self.createBuiltin("next-char", 0, &nextCharForth);
         try self.createBuiltin("find", 0, &find);
         try self.createBuiltin("@", 0, &fetch);
         try self.createBuiltin("!", 0, &store);
@@ -262,6 +283,7 @@ pub const VM = struct {
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
         // try self.createBuiltin("number", 0, &number);
+        try self.createBuiltin("+!", 0, &plusStore);
 
         try self.createBuiltin(".s", 0, &showStack);
 
@@ -420,102 +442,6 @@ pub const VM = struct {
         @intToPtr(*Float, addr).* = val;
     }
 
-    //     // TODO maybe dont copy the buffer into memory here
-    //     pub fn readInput(self: *Self, buf: []const u8) Allocator.Error!void {
-    //         try self.input_stack.append(.{
-    //             .str = try self.allocator.dupe(u8, buf),
-    //             .pos = 0,
-    //             .owns_str = true,
-    //         });
-    //     }
-    //
-    //     // TODO use this instead of readInput
-    //     pub fn pushInput(self: *Self, buf: []const u8) Allocator.Error!void {
-    //         try self.input_stack.append(.{
-    //             .str = try self.allocator.dupe(u8, buf),
-    //             .pos = 0,
-    //             .owns_str = true,
-    //         });
-    //     }
-    //
-    //     pub fn dropInput(self: *Self) Error!void {
-    //         if (self.currentInput()) |input| {
-    //             if (input.owns_str) {
-    //                 self.allocator.free(input.str);
-    //             }
-    //             self.input_stack.items.len -= 1;
-    //         } else {
-    //             return error.EndOfInput;
-    //         }
-    //     }
-    //
-    //     pub fn nextChar(self: *Self) Error!u8 {
-    //         if (self.currentInput()) |input| {
-    //             if (input.pos >= input.str.len) {
-    //                 return error.EndOfInput;
-    //             }
-    //             const ch = input.str[input.pos];
-    //             input.pos += 1;
-    //             return ch;
-    //         } else {
-    //             return error.EmptyInputStack;
-    //         }
-    //     }
-    //
-    //     // TODO unused
-    //     pub fn nextLine(self: *Self) Error!void {
-    //         var ch = try self.nextChar();
-    //
-    //         self.input_buffer_pos = 0;
-    //         while (ch != '\n') : (ch = try self.nextChar()) {
-    //             self.input_buffer[self.input_buffer_pos] = ch;
-    //             self.input_buffer_pos += 1;
-    //         }
-    //     }
-    //
-    //     pub fn nextWord(self: *Self) Error![]u8 {
-    //         if (self.currentInput()) |input| {
-    //             while (true) {
-    //                 const ch = try self.nextChar();
-    //                 if (ch == ' ' or ch == '\n') {
-    //                     continue;
-    //                 } else if (ch == '\\') {
-    //                     while (true) {
-    //                         if ((try self.nextChar()) == '\n') {
-    //                             break;
-    //                         }
-    //                     }
-    //                 } else {
-    //                     break;
-    //                 }
-    //             }
-    //
-    //             const start_idx = input.pos - 1;
-    //             var len: Cell = 1;
-    //
-    //             while (true) {
-    //                 const ch = self.nextChar() catch |err| switch (err) {
-    //                     error.EndOfInput => break,
-    //                     else => return err,
-    //                 };
-    //
-    //                 if (ch == ' ' or ch == '\n') {
-    //                     break;
-    //                 }
-    //
-    //                 if (len >= word_max_len) {
-    //                     return error.WordTooLong;
-    //                 }
-    //
-    //                 len += 1;
-    //             }
-    //
-    //             return input.str[start_idx..(start_idx + len)];
-    //         } else {
-    //             return error.EmptyInputStack;
-    //         }
-    //     }
-    //
     // TODO rename/refactor somehow
     // slice at
     pub fn stringAt(addr: Cell, len: Cell) []u8 {
@@ -708,14 +634,6 @@ pub const VM = struct {
         }
     }
 
-    //     pub fn currentInput(self: *Self) ?*Source {
-    //         if (self.input_stack.items.len == 0) {
-    //             return null;
-    //         } else {
-    //             return &self.input_stack.items[self.input_stack.items.len - 1];
-    //         }
-    //     }
-
     // ===
 
     pub fn execute(self: *Self, xt: Cell) Error!void {
@@ -856,6 +774,10 @@ pub const VM = struct {
 
         try self.push(self.source + start_idx);
         try self.push(len);
+    }
+
+    pub fn nextCharForth(self: *Self) Error!void {
+        try self.push(try self.nextChar());
     }
 
     // builtins
@@ -1323,6 +1245,13 @@ pub const VM = struct {
     // try self.push(try parseNumber(stringAt(addr, len), self.base.*));
     // }
 
+    pub fn plusStore(self: *Self) Error!void {
+        const addr = try self.pop();
+        const n = try self.pop();
+        const ptr = @intToPtr(*Cell, addr);
+        ptr.* +%= n;
+    }
+
     //;
 
     pub fn showStack(self: *Self) Error!void {
@@ -1618,79 +1547,41 @@ pub const VM = struct {
         try self.push(@ptrToInt(&self.source_in));
     }
 
-    pub fn refill(self: *Self) Error!void {
-        switch (self.source_id) {
-            source_id_string => {
-                try self.push(forth_false);
-            },
-            source_id_user_input => {
-                var reader = std.io.getStdIn().reader();
-                var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
-                    switch (err) {
-                        // TODO
-                        error.StreamTooLong => unreachable,
-                        // TODO
-                        else => unreachable,
-                    }
-                };
-                if (line) |s| {
-                    self.source = @ptrToInt(self.input_buffer);
-                    self.source_in = 0;
-                    self.source_len = s.len;
-                    try self.push(forth_true);
-                } else {
-                    try self.push(forth_false);
-                }
-            },
-            else => |id| {
-                var file = @intToPtr(*std.fs.File, id);
-                var reader = file.reader();
-                const line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
-                    switch (err) {
-                        // TODO
-                        error.StreamTooLong => unreachable,
-                        // TODO
-                        else => unreachable,
-                    }
-                };
-                if (line) |s| {
-                    self.source = @ptrToInt(self.input_buffer);
-                    self.source_in = 0;
-                    self.source_len = s.len;
-                    try self.push(forth_true);
-                } else {
-                    try self.push(forth_false);
-                }
-            },
+    fn refillReader(self: *Self, reader: anytype) Error!void {
+        var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
+            switch (err) {
+                // TODO
+                error.StreamTooLong => unreachable,
+                // TODO
+                else => unreachable,
+            }
+        };
+        if (line) |s| {
+            self.source = @ptrToInt(self.input_buffer);
+            self.source_in = 0;
+            self.source_len = s.len;
+            try self.push(forth_true);
+        } else {
+            try self.push(forth_false);
         }
     }
 
-    //     pub fn interpretString(self: *Self) Error!void {
-    //         const n = try self.pop();
-    //         const addr = try self.pop();
-    //         try self.input_stack.append(.{
-    //             .str = stringAt(addr, n),
-    //             .pos = 0,
-    //             .owns_str = false,
-    //         });
-    //     }
-    //
-    //     // TODO note this only works while interpreting, same as above word
-    //     pub fn included(self: *Self) Error!void {
-    //         try self.fileRO();
-    //         try self.fileOpen();
-    //         // TODO
-    //         _ = try self.pop();
-    //         const f = try self.pop();
-    //         var ptr = @intToPtr(*std.fs.File, f);
-    //
-    //         const slc = ptr.readToEndAlloc(self.allocator, file_included_max_size) catch unreachable;
-    //         try self.input_stack.append(.{
-    //             .str = slc,
-    //             .pos = 0,
-    //             .owns_str = true,
-    //         });
-    //         try self.push(f);
-    //         try self.fileClose();
-    //     }
+    pub fn refill(self: *Self) Error!void {
+        switch (self.source_type) {
+            .String => {
+                try self.push(forth_false);
+            },
+            .UserInput => {
+                try self.refillReader(std.io.getStdIn().reader());
+            },
+            .InMemory => {
+                var mem = @intToPtr(*InMemory, self.source_ptr);
+                try self.refillReader(mem.stream.reader());
+            },
+            .File => {
+                var file = @intToPtr(*std.fs.File, self.source_ptr);
+                try self.refillReader(file.reader());
+            },
+        }
+    }
 };
