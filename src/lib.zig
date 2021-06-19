@@ -80,25 +80,6 @@ pub const VM = struct {
     const file_write_flag = 0x2;
     const file_included_max_size = 64 * 1024;
 
-    //     const SourceType = enum(Cell) {
-    //         String,
-    //         UserInput,
-    //         InMemory,
-    //         File,
-    //     };
-    //
-    //     const InMemory = struct {
-    //         buf: []const u8,
-    //         stream: std.io.FixedBufferStream([]const u8),
-    //
-    //         pub fn init(buf: []const u8) InMemory {
-    //             return .{
-    //                 .buf = buf,
-    //                 .stream = std.io.fixedBufferStream(buf),
-    //             };
-    //         }
-    //     };
-
     pub const ParseNumberResult = union(enum) {
         Float: Float,
         Cell: Cell,
@@ -127,13 +108,7 @@ pub const VM = struct {
     rsp: Cell,
     fsp: Cell,
 
-    // source of string/current line
-    // source: Cell,
-    // source_type: SourceType,
-    // source_ptr: Cell,
-    // source_len: Cell,
-    // source_in: Cell,
-
+    source_user_input: Cell,
     source_ptr: Cell,
     source_len: Cell,
     source_in: Cell,
@@ -168,29 +143,14 @@ pub const VM = struct {
         ret.sp = @ptrToInt(ret.stack);
         ret.rsp = @ptrToInt(ret.rstack);
         ret.fsp = @ptrToInt(ret.fstack);
-        //         ret.source_type = .UserInput;
-        //         ret.source_ptr = 0;
-        //         ret.source = 0;
-        //         ret.source_len = 0;
-        //         ret.source_in = 0;
+        ret.source_user_input = forth_true;
 
         // TODO make all this () catch unreachable;
         try ret.initBuiltins();
 
-        //         var f = try allocator.create(std.fs.File);
-        //         defer allocator.destroy(f);
-        //         var file = std.fs.cwd().openFile("src/base.fs", .{ .read = true }) catch unreachable;
-        //         defer file.close();
-        //         f.* = file;
-
-        // var m = try allocator.create(InMemory);
-        // defer allocator.destroy(m);
-        // m.* = InMemory.init(baseLib[0..]);
-
-        // ret.source_type = .InMemory;
-
+        ret.source_user_input = forth_false;
         ret.source_ptr = @ptrToInt(&baseLib[0]);
-        ret.source_len = @ptrToInt(baseLib.len);
+        ret.source_len = baseLib.len;
         ret.source_in = 0;
         ret.interpret() catch |err| switch (err) {
             error.WordNotFound => {
@@ -340,12 +300,15 @@ pub const VM = struct {
         try self.createBuiltin("r/w", 0, &fileRW);
         try self.createBuiltin("open-file", 0, &fileOpen);
         try self.createBuiltin("close-file", 0, &fileClose);
+        try self.createBuiltin("file-size", 0, &fileSize);
         try self.createBuiltin("read-file", 0, &fileRead);
         try self.createBuiltin("read-line", 0, &fileReadLine);
 
-        // try self.createBuiltin("source", 0, &getSource);
-        // try self.createBuiltin(">in", 0, &getIn);
-        // try self.createBuiltin("refill", 0, &refill);
+        try self.createBuiltin("source-user-input", 0, &sourceUserInput);
+        try self.createBuiltin("source-ptr", 0, &sourcePtr);
+        try self.createBuiltin("source-len", 0, &sourceLen);
+        try self.createBuiltin(">in", 0, &sourceIn);
+        try self.createBuiltin("refill", 0, &refill);
     }
 
     //;
@@ -740,14 +703,13 @@ pub const VM = struct {
                 }
             }
         }
-        self.should_bye = false;
     }
 
     pub fn nextChar(self: *Self) Error!u8 {
         if (self.source_in >= self.source_len) {
             return error.EndOfInput;
         }
-        const ch = self.checkedReadByte(self.source + self.source_in);
+        const ch = self.checkedReadByte(self.source_ptr + self.source_in);
         self.source_in += 1;
         return ch;
     }
@@ -787,7 +749,7 @@ pub const VM = struct {
             len += 1;
         }
 
-        try self.push(self.source + start_idx);
+        try self.push(self.source_ptr + start_idx);
         try self.push(len);
     }
 
@@ -1324,9 +1286,10 @@ pub const VM = struct {
 
     pub fn allocate(self: *Self) Error!void {
         const size = try self.pop();
+        const real_size = alignAddr(Cell, size + @sizeOf(Cell));
         var mem = self.allocator.allocWithOptions(
             u8,
-            size + @sizeOf(Cell),
+            real_size,
             @alignOf(Cell),
             null,
         ) catch |err| {
@@ -1339,7 +1302,7 @@ pub const VM = struct {
             }
         };
         const size_ptr = @ptrCast(*Cell, @alignCast(@alignOf(Cell), mem.ptr));
-        size_ptr.* = size;
+        size_ptr.* = real_size;
         const data_ptr = mem.ptr + @sizeOf(Cell);
         try self.push(@ptrToInt(data_ptr));
         try self.push(forth_true);
@@ -1554,6 +1517,12 @@ pub const VM = struct {
         self.allocator.destroy(ptr);
     }
 
+    pub fn fileSize(self: *Self) Error!void {
+        const f = try self.pop();
+        var ptr = @intToPtr(*std.fs.File, f);
+        try self.push(ptr.getEndPos() catch unreachable);
+    }
+
     pub fn fileRead(self: *Self) Error!void {
         const f = try self.pop();
         const n = try self.pop();
@@ -1590,51 +1559,48 @@ pub const VM = struct {
 
     // ===
 
-    //     pub fn getSource(self: *Self) Error!void {
-    //         try self.push(self.source);
-    //         try self.push(self.source_len);
-    //     }
-    //
-    //     pub fn getIn(self: *Self) Error!void {
-    //         try self.push(@ptrToInt(&self.source_in));
-    //     }
-    //
-    //     fn refillReader(self: *Self, reader: anytype) Error!void {
-    //         var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..input_buffer_size], '\n') catch |err| {
-    //             switch (err) {
-    //                 // TODO
-    //                 error.StreamTooLong => unreachable,
-    //                 // TODO
-    //                 else => unreachable,
-    //             }
-    //         };
-    //         if (line) |s| {
-    //             self.source = @ptrToInt(self.input_buffer);
-    //             self.source_in = 0;
-    //             self.source_len = s.len;
-    //             try self.push(forth_true);
-    //         } else {
-    //             try self.push(forth_false);
-    //         }
-    //     }
-    //
-    //     pub fn refill(self: *Self) Error!void {
-    //         switch (self.source_type) {
-    //             .String => {
-    //                 try self.push(forth_false);
-    //             },
-    //             .UserInput => {
-    //                 std.debug.print("> ", .{});
-    //                 try self.refillReader(std.io.getStdIn().reader());
-    //             },
-    //             .InMemory => {
-    //                 var mem = @intToPtr(*InMemory, self.source_ptr);
-    //                 try self.refillReader(mem.stream.reader());
-    //             },
-    //             .File => {
-    //                 var file = @intToPtr(*std.fs.File, self.source_ptr);
-    //                 try self.refillReader(file.reader());
-    //             },
-    //         }
-    //     }
+    pub fn sourceUserInput(self: *Self) Error!void {
+        try self.push(@ptrToInt(&self.source_user_input));
+    }
+
+    pub fn sourcePtr(self: *Self) Error!void {
+        try self.push(@ptrToInt(&self.source_ptr));
+    }
+
+    pub fn sourceLen(self: *Self) Error!void {
+        try self.push(@ptrToInt(&self.source_len));
+    }
+
+    pub fn sourceIn(self: *Self) Error!void {
+        try self.push(@ptrToInt(&self.source_in));
+    }
+
+    fn refillReader(self: *Self, reader: anytype) Error!void {
+        var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..(input_buffer_size - 1)], '\n') catch |err| {
+            switch (err) {
+                // TODO
+                error.StreamTooLong => unreachable,
+                // TODO
+                else => unreachable,
+            }
+        };
+        if (line) |s| {
+            self.input_buffer[s.len] = '\n';
+            self.source_ptr = @ptrToInt(self.input_buffer);
+            self.source_len = s.len + 1;
+            self.source_in = 0;
+            try self.push(forth_true);
+        } else {
+            try self.push(forth_false);
+        }
+    }
+
+    pub fn refill(self: *Self) Error!void {
+        if (self.source_user_input == forth_true) {
+            std.debug.print("> ", .{});
+            try self.refillReader(std.io.getStdIn().reader());
+        } else {
+            try self.push(forth_false);
+        }
+    }
 };

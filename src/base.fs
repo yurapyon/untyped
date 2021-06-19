@@ -21,10 +21,6 @@ latest @ make-immediate
 : immediate latest @ make-immediate ; immediate
 : hidden latest @ hide ; immediate
 
-: \ source nip >in ! ; immediate
-
-\ ===
-
 : 2dup over over ;
 : 2drop drop drop ;
 : 2over 3 pick 3 pick ;
@@ -48,8 +44,6 @@ latest @ make-immediate
 : negate 0 swap - ;
 : / /mod nip ;
 : mod /mod drop ;
-
-\ ===
 
 : if
   ['] 0branch ,
@@ -91,8 +85,6 @@ latest @ make-immediate
   here @ swap -
   swap ! ; immediate
 
-\ ===
-
 : [compile]
   word find drop >cfa ,
   ; immediate
@@ -104,12 +96,25 @@ latest @ make-immediate
   char [compile] literal
   ; immediate
 
-\ ===
+: \
+  begin
+    next-char 10 =
+  until ; immediate
 
 : (
+  1
   begin
-    next-char [char] ) =
-  until ; immediate
+    next-char dup [char] ( = if
+      drop
+      1+
+    else
+      [char] ) = if
+        1-
+      then
+    then
+  dup 0= until
+  drop
+  ; immediate
 
 : case
   0 ; immediate
@@ -683,31 +688,54 @@ create u.buffer 8 cell * allot
 
 \ ===
 
+: file-read-all ( file -- mem len )
+  dup file-size dup allocate if
+    flip ( mem file-size file )
+    3dup read-file 2drop
+  else
+    \ TODO error
+    bye
+  then ;
+
+\ ===
+
+: source
+  source-ptr @ source-len @ ;
+
 : interpret ( -- )
   word dup 0= if
+    2drop
     refill 0= if
       exit
     then
-    2drop tailcall recurse
+    tailcall recurse
   then
   2dup find if
+    -rot 2drop
     dup immediate? 0= state @ and if
       >cfa ,
-      2drop
     else
-      >cfa -rot >r >r execute r> r>
+      >cfa execute
     then
     tailcall recurse
   else
-    drop
+    drop \ drop invalid find address
     2dup >number if
-      -rot 2drop tailcall recurse
+      state @ if
+        ['] lit , ,
+      else
+        -rot
+      then
+      2drop tailcall recurse
     else
-      drop
+      drop \ drop invalid number
       2dup >float if
+        state @ if
+          ['] litfloat , ,
+        then
         2drop tailcall recurse
       else
-        fdrop
+        fdrop \ drop invalid float
         \ todo better error
         ." word not found: " type cr
         bye
@@ -715,38 +743,63 @@ create u.buffer 8 cell * allot
     then
   then ;
 
-0 cell field saved-source.type
+0 cell field saved-source.user-input
   cell field saved-source.ptr
   cell field saved-source.len
   cell field saved-source.in
 constant saved-source
 
-create include-buf 8 saved-source * allot
+8 saved-source * constant include-buf-size
+create include-buf include-buf-size allot
 0 value include-buf-at
 
+: last-saved-input
+  include-buf include-buf-at saved-source * +
+  ;
+
 : save-input
-  \ include-buf include-buf-at saved-source * +
-  \ dup saved-source.type source-type @ swap !
-  \ dup saved-source.ptr source-ptr @ swap !
-  \ dup saved-source.len source-len @ swap !
-  \ dup saved-source.in >in @ swap !
-  \ 1 +to include-buf-at
+  last-saved-input
+  dup saved-source.user-input source-user-input @ swap !
+  dup saved-source.ptr source-ptr @ swap !
+  dup saved-source.len source-len @ swap !
+      saved-source.in >in @ swap !
+  1 +to include-buf-at
   ;
 
 : restore-input
-  \ include-buf include-buf-at saved-source * +
-  \ dup saved-source.type @ source-type !
-  \     saved-source.ptr @ source-ptr !
-  \ -1 +to include-buf-at
+  -1 +to include-buf-at
+  last-saved-input
+  dup saved-source.user-input @ source-user-input !
+  dup saved-source.ptr @ source-ptr !
+  dup saved-source.len @ source-len !
+      saved-source.in @ >in !
   ;
 
-: evaluate
+: evaluate ( addr len -- )
   save-input
-  restore-input
-  ;
+  source-len ! source-ptr !
+  false source-user-input !
+  0 >in !
+  interpret
+  restore-input ;
 
-: included ( file-name-addr n -- )
-  save-input
-  open-file drop
-  restore-input
-  ;
+: include-file ( file -- )
+  dup file-read-all ( file read-all n )
+  >r >r >r
+  1 ridx @ 2 ridx @ evaluate
+  r> r> r>
+  drop free drop ;
+
+: included ( filename n -- )
+  2dup r/o open-file if
+    -rot 2drop
+    dup >r include-file r>
+    close-file
+  else
+    \ todo err
+    ." file not found: " type cr
+    bye
+  then ;
+
+: include
+  word included ;

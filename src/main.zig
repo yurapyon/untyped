@@ -32,15 +32,11 @@ pub fn demo(allocator: *Allocator) !void {
     defer vm.deinit();
 
     if (to_load) |filename| {
-        var f = try allocator.create(std.fs.File);
-        defer allocator.destroy(f);
-        var file = try std.fs.cwd().openFile(filename, .{ .read = true });
-        defer file.close();
-        f.* = file;
-
-        vm.source_type = .File;
-        vm.source_ptr = @ptrToInt(f);
-
+        var f = try readFile(allocator, filename);
+        vm.source_user_input = VM.forth_false;
+        vm.source_ptr = @ptrToInt(f.ptr);
+        vm.source_len = f.len;
+        vm.source_in = 0;
         vm.interpret() catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {}\n", .{vm.word_not_found});
@@ -50,8 +46,7 @@ pub fn demo(allocator: *Allocator) !void {
         };
     }
 
-    vm.source_type = .UserInput;
-    vm.source_ptr = 0;
+    vm.source_user_input = VM.forth_true;
     vm.interpret() catch |err| switch (err) {
         error.WordNotFound => {
             std.debug.print("word not found: {}\n", .{vm.word_not_found});
