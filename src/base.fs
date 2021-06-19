@@ -21,6 +21,8 @@ latest @ make-immediate
 : immediate latest @ make-immediate ; immediate
 : hidden latest @ hide ; immediate
 
+: abort s0 sp! quit ;
+
 : 2dup over over ;
 : 2drop drop drop ;
 : 2over 3 pick 3 pick ;
@@ -85,8 +87,10 @@ latest @ make-immediate
   here @ swap -
   swap ! ; immediate
 
+: unwrap 0= if panic then ;
+
 : [compile]
-  word find drop >cfa ,
+  word find unwrap >cfa ,
   ; immediate
 
 : literal
@@ -238,6 +242,9 @@ latest @ make-immediate
 : latestxt
   latest @ >cfa ;
 
+: allot ( ct -- )
+  here +! ;
+
 : create
   word define
   ['] docol ,
@@ -262,11 +269,13 @@ latest @ make-immediate
 : >body ( 'create'd-word -- data-addr )
   2 cells + @ ;
 
+: variable
+  create cell allot ;
+
 : constant
   create ,
   does> @ ;
 
-\ todo rename
 : >value-data ( val-addr -- data-addr )
   >cfa 2 cells + ;
 
@@ -277,7 +286,7 @@ latest @ make-immediate
   ['] exit , ;
 
 : to
-  word find drop >value-data
+  word find unwrap >value-data
   state @ if
     ['] lit , ,
     ['] ! ,
@@ -287,7 +296,7 @@ latest @ make-immediate
   ; immediate
 
 : +to
-  word find drop >value-data
+  word find unwrap >value-data
   state @ if
     ['] lit , ,
     ['] +! ,
@@ -328,9 +337,6 @@ latest @ make-immediate
 
 : falign ( -- )
   float align-to ;
-
-: allot ( ct -- )
-  here +! ;
 
 \ todo check this works
 : move ( src n dest )
@@ -378,6 +384,16 @@ latest @ make-immediate
     type
   then ; immediate
 
+\ todo dont test here, just abort w/ message
+: abort"
+  [compile] s"
+  rot 0= if
+    ." abort: "
+    type cr abort
+  else
+    2drop
+  then ;
+
 : char>digit ( hex-char -- u )
   case
   dup [char] 9 [char] 0 within if [char] 0 -      else
@@ -417,9 +433,9 @@ latest @ make-immediate
       [char] t  of 9 endof
       [char] v  of 11 endof
       [char] z  of 0 endof
-        \ TODO error
-        s" invalid string escape" type cr
-        bye
+        \ todo use abort"
+        ." invalid string escape" cr
+        abort
       endcase
     then
     over c!
@@ -662,7 +678,7 @@ create u.buffer 8 cell * allot
 \   check if cfa is builitin,
 \   dont do anything in that case
 : tailcall
-  word find drop dup immediate? if
+  word find unwrap dup immediate? if
     here @ swap
     >cfa execute
     dup @ cell + swap !

@@ -4,13 +4,16 @@ const Allocator = std.mem.Allocator;
 //;
 
 // TODO
-// key? (keyAvailable)
+// better error reporting
+// wordlists maybe
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
 // 2c, 4c,
-// `nextname`
-// better error reporting
+// base.fs, find spots where errors are ignored and abort"
+//   error handling in general
+//   error ( num -- ) which passes error num to zig
+//     can be used with zig enums
 
 // ===
 
@@ -21,6 +24,8 @@ const Allocator = std.mem.Allocator;
 
 pub const VM = struct {
     const Self = @This();
+
+    // TODO this can take options for memory size, float size, etc
 
     pub const Error = error{
         StackUnderflow,
@@ -43,6 +48,7 @@ pub const VM = struct {
         AlignmentError,
 
         EndOfInput,
+        Panic,
     } || Allocator.Error;
 
     pub const baseLib = @embedFile("base.fs");
@@ -66,7 +72,7 @@ pub const VM = struct {
     const mem_size = 4 * 1024 * 1024;
     const stack_size = 192 * @sizeOf(Cell);
     const rstack_size = 64 * @sizeOf(Cell);
-    // TODO this needs to be cell aligned
+    // TODO these two need to be cell aligned
     const fstack_size = 64 * @sizeOf(Float);
     const input_buffer_size = 128;
 
@@ -143,16 +149,9 @@ pub const VM = struct {
         ret.sp = @ptrToInt(ret.stack);
         ret.rsp = @ptrToInt(ret.rstack);
         ret.fsp = @ptrToInt(ret.fstack);
-        ret.source_user_input = forth_true;
 
-        // TODO make all this () catch unreachable;
         try ret.initBuiltins();
-
-        ret.source_user_input = forth_false;
-        ret.source_ptr = @ptrToInt(&baseLib[0]);
-        ret.source_len = baseLib.len;
-        ret.source_in = 0;
-        ret.interpret() catch |err| switch (err) {
+        ret.interpretBuffer(baseLib) catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {}\n", .{ret.word_not_found});
                 return err;
@@ -160,6 +159,7 @@ pub const VM = struct {
             else => return err,
         };
 
+        ret.source_user_input = forth_true;
         return ret;
     }
 
@@ -208,10 +208,9 @@ pub const VM = struct {
         try self.createBuiltin("pick", 0, &pick);
         try self.createBuiltin("2swap", 0, &swap2);
 
-        try self.createBuiltin(">R", 0, &toR);
-        try self.createBuiltin("R>", 0, &fromR);
-        try self.createBuiltin("R@", 0, &rFetch);
-        // TODO 2r> 2>r
+        try self.createBuiltin(">r", 0, &toR);
+        try self.createBuiltin("r>", 0, &fromR);
+        try self.createBuiltin("r@", 0, &rFetch);
 
         try self.createBuiltin("define", 0, &define);
         try self.createBuiltin("word", 0, &word);
@@ -277,7 +276,7 @@ pub const VM = struct {
         try self.createBuiltin("mem=", 0, &memEql);
 
         // TODO float comparisons
-        // TODO fix these names
+        // TODO fix these zig fn names
         try self.createBuiltin("f.", 0, &fPrint);
         try self.createBuiltin("f+", 0, &fplus);
         try self.createBuiltin("f-", 0, &fminus);
@@ -309,6 +308,8 @@ pub const VM = struct {
         try self.createBuiltin("source-len", 0, &sourceLen);
         try self.createBuiltin(">in", 0, &sourceIn);
         try self.createBuiltin("refill", 0, &refill);
+
+        try self.createBuiltin("panic", 0, &panic);
     }
 
     //;
@@ -377,29 +378,6 @@ pub const VM = struct {
     // TODO fidx
 
     //;
-
-    pub fn debugPrintStack(self: *Self) void {
-        const len = (self.sp - @ptrToInt(self.stack)) / @sizeOf(Cell);
-        std.debug.print("stack: len: {}\n", .{len});
-        var i = len;
-        var p = @ptrToInt(self.stack);
-        while (p < self.sp) : (p += @sizeOf(Cell)) {
-            i -= 1;
-            std.debug.print("{}: 0x{x:.>16} {}\n", .{
-                i,
-                @intToPtr(*const Cell, p).*,
-                @intToPtr(*const Cell, p).*,
-            });
-        }
-    }
-
-    //;
-
-    // TODO
-    // for read/write cell
-    //   put alignment error in VM.Error ?
-    //   probably yeah,
-    //   instead of getting segfaults for things accidentally left on rstack, will be alignment error
 
     pub fn checkedReadCell(self: *Self, addr: Cell) Error!Cell {
         if (addr % @alignOf(Cell) != 0) return error.AlignmentError;
@@ -712,6 +690,14 @@ pub const VM = struct {
         const ch = self.checkedReadByte(self.source_ptr + self.source_in);
         self.source_in += 1;
         return ch;
+    }
+
+    pub fn interpretBuffer(self: *Self, buf: []const u8) Error!void {
+        self.source_user_input = VM.forth_false;
+        self.source_ptr = @ptrToInt(buf.ptr);
+        self.source_len = buf.len;
+        self.source_in = 0;
+        try self.interpret();
     }
 
     // builtins
@@ -1236,7 +1222,18 @@ pub const VM = struct {
     //;
 
     pub fn showStack(self: *Self) Error!void {
-        self.debugPrintStack();
+        const len = (self.sp - @ptrToInt(self.stack)) / @sizeOf(Cell);
+        std.debug.print("stack: len: {}\n", .{len});
+        var i = len;
+        var p = @ptrToInt(self.stack);
+        while (p < self.sp) : (p += @sizeOf(Cell)) {
+            i -= 1;
+            std.debug.print("{}: 0x{x:.>16} {}\n", .{
+                i,
+                @intToPtr(*const Cell, p).*,
+                @intToPtr(*const Cell, p).*,
+            });
+        }
     }
 
     //;
@@ -1317,6 +1314,19 @@ pub const VM = struct {
         mem.ptr = mem_ptr;
         mem.len = size_ptr.*;
         self.allocator.free(mem);
+    }
+
+    pub fn resize(self: *Self) Error!void {
+        // TODO
+        const size = try self.pop();
+        const addr = try self.pop();
+        const data_ptr = @intToPtr([*]u8, addr);
+        const mem_ptr = data_ptr - @sizeOf(Cell);
+        const size_ptr = @ptrCast(*Cell, @alignCast(@alignOf(Cell), mem_ptr));
+        var mem: []u8 = undefined;
+        mem.ptr = mem_ptr;
+        mem.len = size_ptr.*;
+        try self.allocator.realloc(mem, size);
     }
 
     pub fn cmoveUp(self: *Self) Error!void {
@@ -1602,5 +1612,11 @@ pub const VM = struct {
         } else {
             try self.push(forth_false);
         }
+    }
+
+    // ===
+
+    pub fn panic(self: *Self) Error!void {
+        return error.Panic;
     }
 };
