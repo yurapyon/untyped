@@ -47,6 +47,8 @@ pub fn demo(allocator: *Allocator) !void {
     }
 
     vm.source_user_input = VM.forth_true;
+    try vm.refill();
+    try vm.drop();
     vm.interpret() catch |err| switch (err) {
         error.WordNotFound => {
             std.debug.print("word not found: {}\n", .{vm.word_not_found});

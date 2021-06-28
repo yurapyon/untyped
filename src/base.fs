@@ -32,6 +32,7 @@ latest @ make-immediate
 
 : chars ;
 : cells cell * ;
+: halfs half * ;
 : floats float * ;
 
 : 0= 0 = ;
@@ -46,6 +47,7 @@ latest @ make-immediate
 : negate 0 swap - ;
 : / /mod nip ;
 : mod /mod drop ;
+: 2* 2 * ;
 
 : if
   ['] 0branch ,
@@ -88,6 +90,7 @@ latest @ make-immediate
   swap ! ; immediate
 
 : unwrap 0= if panic then ;
+: abs dup 0< if negate then ;
 
 : [compile]
   word find unwrap >cfa ,
@@ -99,6 +102,9 @@ latest @ make-immediate
 : [char]
   char [compile] literal
   ; immediate
+
+: [hide]
+  word find unwrap hide ;
 
 : \
   begin
@@ -136,6 +142,17 @@ latest @ make-immediate
 
 : endcase
   ['] drop ,
+  begin
+    ?dup
+  while
+    [compile] then
+  repeat
+  ; immediate
+
+: cond
+  0 ; immediate
+
+: endcond
   begin
     ?dup
   while
@@ -239,6 +256,42 @@ latest @ make-immediate
 
 \ ===
 
+: aligned-to ( addr align -- a-addr )
+  2dup mod ( addr align off-aligned )
+  ?dup if
+    - +
+  else
+    drop
+  then ;
+
+: align-to ( align -- )
+  here @ swap aligned-to here ! ;
+
+: aligned ( addr -- a-addr )
+  cell aligned-to ;
+
+: align ( -- )
+  cell align-to ;
+
+: faligned ( addr -- a-addr )
+  float aligned-to ;
+
+: falign ( -- )
+  float align-to ;
+
+\ todo check this works
+: move ( src n dest )
+  3dup nip < if
+    cmove>
+  else
+    cmove<
+  then ;
+
+: mem-end mem mem-size + ;
+: unused mem-end here @ - ;
+
+\ ===
+
 : latestxt
   latest @ >cfa ;
 
@@ -305,6 +358,35 @@ latest @ make-immediate
   then
   ; immediate
 
+: >fvalue-data ( val-addr -- data-addr )
+  >cfa 2 cells + ;
+
+: fvalue
+  word define
+  ['] docol ,
+  ['] litfloat , f, align
+  ['] exit , ;
+
+: fto
+  word find unwrap >fvalue-data
+  state @ if
+    ['] lit , ,
+    ['] f! ,
+  else
+    f!
+  then
+  ; immediate
+
+: f+to
+  word find unwrap >fvalue-data
+  state @ if
+    ['] lit , ,
+    ['] f+! ,
+  else
+    f+!
+  then
+  ; immediate
+
 \ ===
 
 : :noname
@@ -312,42 +394,6 @@ latest @ make-immediate
   here @
   ['] docol ,
   ] ;
-
-\ ===
-
-: aligned-to ( addr align -- a-addr )
-  2dup mod ( addr align off-aligned )
-  ?dup if
-    - +
-  else
-    drop
-  then ;
-
-: align-to ( align -- )
-  here @ swap aligned-to here ! ;
-
-: aligned ( addr -- a-addr )
-  cell aligned-to ;
-
-: align ( -- )
-  cell align-to ;
-
-: faligned ( addr -- a-addr )
-  float aligned-to ;
-
-: falign ( -- )
-  float align-to ;
-
-\ todo check this works
-: move ( src n dest )
-  3dup nip < if
-    cmove>
-  else
-    cmove<
-  then ;
-
-: mem-end mem mem-size + ;
-: unused mem-end here @ - ;
 
 \ ===
 
@@ -462,6 +508,32 @@ latest @ make-immediate
   rot over = 0= if 3drop false exit then
   mem= ;
 
+: z"
+  state @ if
+    ['] lit , here @ 3 cells + ,
+    ['] branch , here @ 0 ,
+    here @ read-string-into-memory here !
+    0 c,
+    align
+    dup here @ swap - swap !
+  else
+    [compile] s"
+    over + 0 swap c!
+  then
+  ; immediate
+
+: strlen
+  0
+  begin
+    2dup + c@ 0<>
+  while
+    1+
+  repeat
+  nip ;
+
+: ztype
+  dup strlen type ;
+
 \ ===
 
 : [if]
@@ -563,6 +635,7 @@ create u.buffer 8 cell * allot
 : . 0 .r space ;
 : u. u. space ;
 : ? @ . ;
+: f? f@ f. ;
 
 \ ===
 
@@ -591,7 +664,7 @@ create u.buffer 8 cell * allot
   begin
     2dup >
   while
-    dup 16 u.r
+    dup 16 u.r space
     16 0 ?do
       dup i + c@
       2 u.0 space
@@ -606,6 +679,7 @@ create u.buffer 8 cell * allot
     cr
     16 +
   repeat
+  2drop
   r> base ! ;
 
 \ ===
@@ -695,12 +769,22 @@ create u.buffer 8 cell * allot
   does> @ + ;
 
 : field ( start this-size "name" -- end-aligned )
-  2dup aligned-to ( start this-size aligned-start )
+  over aligned   ( start this-size aligned-start )
+  flip drop      ( aligned-start this-size )
+  +field ;
+
+: cfield +field ;
+
+: ffield ( start this-size "name" -- end-aligned )
+  over faligned   ( start this-size aligned-start )
   flip drop       ( aligned-start this-size )
   +field ;
 
 : enum ( value "name" -- value+1 )
   dup constant 1+ ;
+
+: flag ( value "name" -- value<<1 )
+  dup constant 2* ;
 
 \ ===
 
@@ -712,6 +796,11 @@ create u.buffer 8 cell * allot
     \ TODO error
     bye
   then ;
+
+: file>string ( filepath n -- addr n )
+  r/o open-file unwrap ( file )
+  dup file-read-all    ( file addr n )
+  rot close-file ;
 
 \ ===
 
@@ -747,7 +836,7 @@ create u.buffer 8 cell * allot
       drop \ drop invalid number
       2dup >float if
         state @ if
-          ['] litfloat , ,
+          ['] litfloat , f, align
         then
         2drop tailcall recurse
       else

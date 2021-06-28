@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 //   error handling in general
 //   error ( num -- ) which passes error num to zig
 //     can be used with zig enums
+// bye is needed twice to quit for some reason
 
 // ===
 
@@ -53,11 +54,12 @@ pub const VM = struct {
 
     pub const baseLib = @embedFile("base.fs");
 
-    // TODO make sure @sizeOf(Float) <= @sizeOf(Cell)
+    // TODO make sure cell is u64
     pub const Cell = usize;
     pub const SCell = isize;
+    pub const HalfCell = u32;
     pub const Builtin = fn (self: *Self) Error!void;
-    pub const Float = f64;
+    pub const Float = f32;
 
     pub const forth_false: Cell = 0;
     pub const forth_true = ~forth_false;
@@ -170,7 +172,7 @@ pub const VM = struct {
     fn initBuiltins(self: *Self) Error!void {
         try self.createBuiltin("docol", 0, &docol);
         self.docol_address = wordHeaderCodeFieldAddress(self.latest);
-        try self.createBuiltin("exit", 0, &exit);
+        try self.createBuiltin("exit", 0, &exit_);
         try self.createBuiltin("lit", 0, &lit);
         self.lit_address = wordHeaderCodeFieldAddress(self.latest);
         try self.createBuiltin("litfloat", 0, &litFloat);
@@ -218,10 +220,13 @@ pub const VM = struct {
         try self.createBuiltin("find", 0, &find);
         try self.createBuiltin("@", 0, &fetch);
         try self.createBuiltin("!", 0, &store);
+        try self.createBuiltin(",", 0, &comma);
         try self.createBuiltin("c@", 0, &fetchByte);
         try self.createBuiltin("c!", 0, &storeByte);
-        try self.createBuiltin(",", 0, &comma);
         try self.createBuiltin("c,", 0, &commaByte);
+        try self.createBuiltin("h@", 0, &fetchHalf);
+        try self.createBuiltin("h!", 0, &storeHalf);
+        try self.createBuiltin("h,", 0, &commaHalf);
         try self.createBuiltin("'", 0, &tick);
         try self.createBuiltin("[']", word_immediate_flag, &bracketTick);
         try self.createBuiltin("[", word_immediate_flag, &lBracket);
@@ -256,6 +261,7 @@ pub const VM = struct {
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
+        try self.createBuiltin("half", 0, &half);
         try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
 
@@ -269,27 +275,27 @@ pub const VM = struct {
         try self.createBuiltin("emit", 0, &emit);
 
         try self.createBuiltin("allocate", 0, &allocate);
-        try self.createBuiltin("free", 0, &free);
+        try self.createBuiltin("free", 0, &free_);
         // TODO resize
         try self.createBuiltin("cmove>", 0, &cmoveUp);
         try self.createBuiltin("cmove<", 0, &cmoveDown);
         try self.createBuiltin("mem=", 0, &memEql);
 
         // TODO float comparisons
-        // TODO fix these zig fn names
         try self.createBuiltin("f.", 0, &fPrint);
-        try self.createBuiltin("f+", 0, &fplus);
-        try self.createBuiltin("f-", 0, &fminus);
-        try self.createBuiltin("f*", 0, &ftimes);
-        try self.createBuiltin("f/", 0, &fdivide);
+        try self.createBuiltin("f+", 0, &fPlus);
+        try self.createBuiltin("f-", 0, &fMinus);
+        try self.createBuiltin("f*", 0, &fTimes);
+        try self.createBuiltin("f/", 0, &fDivide);
         try self.createBuiltin("float", 0, &fSize);
-        // try self.createBuiltin("fsin", 0, &fSize);
+        try self.createBuiltin("sin", 0, &fSin);
         try self.createBuiltin("pi", 0, &pi);
         try self.createBuiltin("tau", 0, &tau);
-        try self.createBuiltin("f@", 0, &fetchFloat);
-        try self.createBuiltin("f!", 0, &storeFloat);
-        try self.createBuiltin("f,", 0, &commaFloat);
-        try self.createBuiltin(">float", 0, &parseFloatForth);
+        try self.createBuiltin("f@", 0, &fFetch);
+        try self.createBuiltin("f!", 0, &fStore);
+        try self.createBuiltin("f,", 0, &fComma);
+        try self.createBuiltin("f+!", 0, &fPlusStore);
+        try self.createBuiltin(">float", 0, &fParse);
         try self.createBuiltin("fdrop", 0, &fDrop);
         try self.createBuiltin("fdup", 0, &fDup);
         try self.createBuiltin("fswap", 0, &fSwap);
@@ -309,7 +315,7 @@ pub const VM = struct {
         try self.createBuiltin(">in", 0, &sourceIn);
         try self.createBuiltin("refill", 0, &refill);
 
-        try self.createBuiltin("panic", 0, &panic);
+        try self.createBuiltin("panic", 0, &panic_);
     }
 
     //;
@@ -379,39 +385,25 @@ pub const VM = struct {
 
     //;
 
-    pub fn checkedReadCell(self: *Self, addr: Cell) Error!Cell {
-        if (addr % @alignOf(Cell) != 0) return error.AlignmentError;
-        return @intToPtr(*const Cell, addr).*;
+    pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
+        if (addr % @alignOf(T) != 0) return error.AlignmentError;
+        return @intToPtr(*const T, addr).*;
     }
 
-    pub fn checkedReadByte(self: *Self, addr: Cell) Error!u8 {
-        return @intToPtr(*const u8, addr).*;
+    // TODO handle masking the bits
+    pub fn checkedWrite(
+        self: *Self,
+        comptime T: type,
+        addr: Cell,
+        val: T,
+    ) Error!void {
+        if (addr % @alignOf(T) != 0) return error.AlignmentError;
+        @intToPtr(*T, addr).* = val;
     }
 
-    pub fn checkedReadFloat(self: *Self, addr: Cell) Error!Float {
-        if (addr % @alignOf(Float) != 0) return error.AlignmentError;
-        return @intToPtr(*const Float, addr).*;
-    }
-
-    pub fn checkedWriteCell(self: *Self, addr: Cell, val: Cell) Error!void {
-        if (addr % @alignOf(Cell) != 0) return error.AlignmentError;
-        @intToPtr(*Cell, addr).* = val;
-    }
-
-    pub fn checkedWriteByte(self: *Self, addr: Cell, val: u8) Error!void {
-        @intToPtr(*u8, addr).* = val;
-    }
-
-    pub fn checkedWriteFloat(self: *Self, addr: Cell, val: Float) Error!void {
-        if (addr % @alignOf(Float) != 0) return error.AlignmentError;
-        @intToPtr(*Float, addr).* = val;
-    }
-
-    // TODO rename/refactor somehow
-    // slice at
-    pub fn stringAt(addr: Cell, len: Cell) []u8 {
-        var str: []u8 = undefined;
-        str.ptr = @intToPtr([*]u8, addr);
+    pub fn arrayAt(comptime T: type, addr: Cell, len: Cell) []T {
+        var str: []T = undefined;
+        str.ptr = @intToPtr([*]T, addr);
         str.len = len;
         return str;
     }
@@ -433,6 +425,17 @@ pub const VM = struct {
             read_at += 1;
         }
 
+        var effective_base = base_;
+        if (str.len > 2) {
+            if (std.mem.eql(u8, "0x", str[0..2])) {
+                effective_base = 16;
+                read_at += 2;
+            } else if (std.mem.eql(u8, "0b", str[0..2])) {
+                effective_base = 2;
+                read_at += 2;
+            }
+        }
+
         while (read_at < str.len) : (read_at += 1) {
             const ch = str[read_at];
             const digit = switch (ch) {
@@ -441,8 +444,8 @@ pub const VM = struct {
                 'a'...'z' => ch - 'a' + 10,
                 else => return error.InvalidNumber,
             };
-            if (digit > base_) return error.InvalidNumber;
-            acc = acc * base_ + digit;
+            if (digit > effective_base) return error.InvalidNumber;
+            acc = acc * effective_base + digit;
         }
 
         return if (is_negative) 0 -% acc else acc;
@@ -561,7 +564,7 @@ pub const VM = struct {
     }
 
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
-        const name = stringAt(addr, len);
+        const name = arrayAt(u8, addr, len);
 
         var check = self.latest;
         while (check != 0) : (check = wordHeaderPrevious(check)) {
@@ -602,13 +605,14 @@ pub const VM = struct {
         self.curr_xt = xt;
         var first = xt;
 
+        self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
             if (self.curr_xt == self.quit_address) {
                 try self.quit();
                 break;
             }
-            if ((try self.checkedReadCell(first)) == builtin_fn_id) {
+            if ((try self.checkedRead(Cell, first)) == builtin_fn_id) {
                 const fn_ptr = builtinFnPtr(first);
                 try fn_ptr.*(self);
             } else {
@@ -617,10 +621,9 @@ pub const VM = struct {
             }
 
             self.curr_xt = self.next;
-            first = try self.checkedReadCell(self.curr_xt);
+            first = try self.checkedRead(Cell, self.curr_xt);
             self.next += @sizeOf(Cell);
         }
-        self.should_quit = false;
     }
 
     pub fn interpret(self: *Self) Error!void {
@@ -656,7 +659,7 @@ pub const VM = struct {
                     try self.execute(xt);
                 }
             } else {
-                var str = stringAt(word_addr, word_len);
+                var str = arrayAt(u8, word_addr, word_len);
                 if (parseNumber(str, self.base) catch null) |num| {
                     if (is_compiling) {
                         try self.push(self.lit_address);
@@ -670,8 +673,9 @@ pub const VM = struct {
                     if (is_compiling) {
                         try self.push(self.litFloat_address);
                         try self.comma();
-                        try self.push(floatToCell(fl));
-                        try self.comma();
+                        try self.fpush(fl);
+                        try self.fComma();
+                        self.here = alignAddr(Cell, self.here);
                     } else {
                         try self.fpush(fl);
                     }
@@ -687,7 +691,7 @@ pub const VM = struct {
         if (self.source_in >= self.source_len) {
             return error.EndOfInput;
         }
-        const ch = self.checkedReadByte(self.source_ptr + self.source_in);
+        const ch = self.checkedRead(u8, self.source_ptr + self.source_in);
         self.source_in += 1;
         return ch;
     }
@@ -748,17 +752,17 @@ pub const VM = struct {
         self.next = self.curr_xt + @sizeOf(Cell);
     }
 
-    pub fn exit(self: *Self) Error!void {
+    pub fn exit_(self: *Self) Error!void {
         self.next = try self.rpop();
     }
 
     pub fn lit(self: *Self) Error!void {
-        try self.push(try self.checkedReadCell(self.next));
+        try self.push(try self.checkedRead(Cell, self.next));
         self.next += @sizeOf(Cell);
     }
 
     pub fn litFloat(self: *Self) Error!void {
-        try self.fpush(cellToFloat(try self.checkedReadCell(self.next)));
+        try self.fpush(try self.checkedRead(Float, self.next));
         self.next += @sizeOf(Cell);
     }
 
@@ -920,7 +924,7 @@ pub const VM = struct {
         const at = try self.pop();
         const tos = self.sp;
         const offset = (1 + at) * @sizeOf(Cell);
-        try self.push(try self.checkedReadCell(tos - offset));
+        try self.push(try self.checkedRead(Cell, tos - offset));
     }
 
     pub fn swap2(self: *Self) Error!void {
@@ -945,7 +949,7 @@ pub const VM = struct {
     }
 
     pub fn rFetch(self: *Self) Error!void {
-        try self.push(try self.checkedReadCell(self.rsp - @sizeOf(Cell)));
+        try self.push(try self.checkedRead(Cell, self.rsp - @sizeOf(Cell)));
     }
 
     //;
@@ -956,7 +960,7 @@ pub const VM = struct {
         if (len == 0) {
             try self.createWordHeader("", 0);
         } else if (len < word_max_len) {
-            try self.createWordHeader(stringAt(addr, len), 0);
+            try self.createWordHeader(arrayAt(u8, addr, len), 0);
         } else {
             return error.WordTooLong;
         }
@@ -974,7 +978,7 @@ pub const VM = struct {
         const ret = self.findWord(addr, len) catch |err| {
             switch (err) {
                 error.WordNotFound => {
-                    self.word_not_found = stringAt(addr, len);
+                    self.word_not_found = arrayAt(u8, addr, len);
                     try self.push(addr);
                     try self.push(forth_false);
                     return;
@@ -989,24 +993,13 @@ pub const VM = struct {
 
     pub fn fetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.push(try self.checkedReadCell(addr));
+        try self.push(try self.checkedRead(Cell, addr));
     }
 
     pub fn store(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWriteCell(addr, val);
-    }
-
-    pub fn fetchByte(self: *Self) Error!void {
-        const addr = try self.pop();
-        try self.push(try self.checkedReadByte(addr));
-    }
-
-    pub fn storeByte(self: *Self) Error!void {
-        const addr = try self.pop();
-        const val = try self.pop();
-        try self.checkedWriteByte(addr, @intCast(u8, val & 0xff));
+        try self.checkedWrite(Cell, addr, val);
     }
 
     pub fn comma(self: *Self) Error!void {
@@ -1015,10 +1008,38 @@ pub const VM = struct {
         self.here += @sizeOf(Cell);
     }
 
+    pub fn fetchByte(self: *Self) Error!void {
+        const addr = try self.pop();
+        try self.push(try self.checkedRead(u8, addr));
+    }
+
+    pub fn storeByte(self: *Self) Error!void {
+        const addr = try self.pop();
+        const val = try self.pop();
+        try self.checkedWrite(u8, addr, @intCast(u8, val & 0xff));
+    }
+
     pub fn commaByte(self: *Self) Error!void {
         try self.push(self.here);
         try self.storeByte();
         self.here += 1;
+    }
+
+    pub fn fetchHalf(self: *Self) Error!void {
+        const addr = try self.pop();
+        try self.push(try self.checkedRead(HalfCell, addr));
+    }
+
+    pub fn storeHalf(self: *Self) Error!void {
+        const addr = try self.pop();
+        const val = try self.pop();
+        try self.checkedWrite(HalfCell, addr, @intCast(HalfCell, val & 0xffffffff));
+    }
+
+    pub fn commaHalf(self: *Self) Error!void {
+        try self.push(self.here);
+        try self.storeHalf();
+        self.here += @sizeOf(HalfCell);
     }
 
     pub fn tick(self: *Self) Error!void {
@@ -1072,12 +1093,12 @@ pub const VM = struct {
     }
 
     pub fn branch(self: *Self) Error!void {
-        self.next +%= try self.checkedReadCell(self.next);
+        self.next +%= try self.checkedRead(Cell, self.next);
     }
 
     pub fn zbranch(self: *Self) Error!void {
         if ((try self.pop()) == forth_false) {
-            self.next +%= try self.checkedReadCell(self.next);
+            self.next +%= try self.checkedRead(Cell, self.next);
         } else {
             self.next += @sizeOf(Cell);
         }
@@ -1197,10 +1218,14 @@ pub const VM = struct {
         try self.push(@sizeOf(Cell));
     }
 
+    pub fn half(self: *Self) Error!void {
+        try self.push(@sizeOf(HalfCell));
+    }
+
     pub fn parseNumberForth(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        const num = parseNumber(stringAt(addr, len), self.base) catch |err| switch (err) {
+        const num = parseNumber(arrayAt(u8, addr, len), self.base) catch |err| switch (err) {
             error.InvalidNumber => {
                 try self.push(0);
                 try self.push(forth_false);
@@ -1215,6 +1240,7 @@ pub const VM = struct {
     pub fn plusStore(self: *Self) Error!void {
         const addr = try self.pop();
         const n = try self.pop();
+        // TODO alignment error
         const ptr = @intToPtr(*Cell, addr);
         ptr.* +%= n;
     }
@@ -1239,7 +1265,7 @@ pub const VM = struct {
     //;
 
     pub fn litString(self: *Self) Error!void {
-        const len = try self.checkedReadCell(self.next);
+        const len = try self.checkedRead(Cell, self.next);
         self.next += @sizeOf(Cell);
         try self.push(self.next);
         try self.push(len);
@@ -1250,7 +1276,7 @@ pub const VM = struct {
     pub fn type_(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        std.debug.print("{}", .{stringAt(addr, len)});
+        std.debug.print("{}", .{arrayAt(u8, addr, len)});
     }
 
     //     pub fn key(self: *Self) Error!void {
@@ -1272,7 +1298,7 @@ pub const VM = struct {
         try self.word();
         const len = try self.pop();
         const addr = try self.pop();
-        try self.push(stringAt(addr, len)[0]);
+        try self.push(arrayAt(u8, addr, len)[0]);
     }
 
     pub fn emit(self: *Self) Error!void {
@@ -1305,7 +1331,7 @@ pub const VM = struct {
         try self.push(forth_true);
     }
 
-    pub fn free(self: *Self) Error!void {
+    pub fn free_(self: *Self) Error!void {
         const addr = try self.pop();
         const data_ptr = @intToPtr([*]u8, addr);
         const mem_ptr = data_ptr - @sizeOf(Cell);
@@ -1348,9 +1374,9 @@ pub const VM = struct {
         const src = @intToPtr([*]u8, try self.pop());
         {
             @setRuntimeSafety(false);
-            var i: usize = len - 1;
-            while (i >= len) : (i -= 1) {
-                dest[i] = src[i];
+            var i: usize = len;
+            while (i > 0) : (i -= 1) {
+                dest[i - 1] = src[i - 1];
             }
         }
     }
@@ -1365,8 +1391,8 @@ pub const VM = struct {
         }
         var i: usize = 0;
         while (i < ct) : (i += 1) {
-            if ((try self.checkedReadByte(addr_a)) !=
-                (try self.checkedReadByte(addr_b)))
+            if ((try self.checkedRead(u8, addr_a)) !=
+                (try self.checkedRead(u8, addr_b)))
             {
                 try self.push(forth_false);
                 return;
@@ -1377,49 +1403,40 @@ pub const VM = struct {
 
     // ===
 
-    pub fn floatToCell(f: Float) Cell {
-        // TODO handle if @sizeOf(Float) != @sizeOf(Cell)
-        return @bitCast(Cell, f);
-    }
-
-    pub fn cellToFloat(c: Cell) Float {
-        return @bitCast(Float, c);
-    }
-
     pub fn fPrint(self: *Self) Error!void {
         const float = try self.fpop();
-        std.debug.print("{d}", .{float});
+        std.debug.print("{d} ", .{float});
     }
 
     pub fn fSize(self: *Self) Error!void {
         try self.push(@sizeOf(Float));
     }
 
-    pub fn fplus(self: *Self) Error!void {
+    pub fn fPlus(self: *Self) Error!void {
         const a = try self.fpop();
         const b = try self.fpop();
         try self.fpush(b + a);
     }
 
-    pub fn fminus(self: *Self) Error!void {
+    pub fn fMinus(self: *Self) Error!void {
         const a = try self.fpop();
         const b = try self.fpop();
         try self.fpush(b - a);
     }
 
-    pub fn ftimes(self: *Self) Error!void {
+    pub fn fTimes(self: *Self) Error!void {
         const a = try self.fpop();
         const b = try self.fpop();
         try self.fpush(b * a);
     }
 
-    pub fn fdivide(self: *Self) Error!void {
+    pub fn fDivide(self: *Self) Error!void {
         const a = try self.fpop();
         const b = try self.fpop();
         try self.fpush(b / a);
     }
 
-    pub fn fsin(self: *Self) Error!void {
+    pub fn fSin(self: *Self) Error!void {
         const val = try self.fpop();
         try self.fpush(std.math.sin(val));
     }
@@ -1432,27 +1449,35 @@ pub const VM = struct {
         try self.fpush(std.math.tau);
     }
 
-    pub fn fetchFloat(self: *Self) Error!void {
+    pub fn fFetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.fpush(try self.checkedReadFloat(addr));
+        try self.fpush(try self.checkedRead(Float, addr));
     }
 
-    pub fn storeFloat(self: *Self) Error!void {
+    pub fn fStore(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.fpop();
-        try self.checkedWriteFloat(addr, val);
+        try self.checkedWrite(Float, addr, val);
     }
 
-    pub fn commaFloat(self: *Self) Error!void {
+    pub fn fComma(self: *Self) Error!void {
         try self.push(self.here);
-        try self.storeFloat();
+        try self.fStore();
         self.here += @sizeOf(Float);
     }
 
-    pub fn parseFloatForth(self: *Self) Error!void {
+    pub fn fPlusStore(self: *Self) Error!void {
+        const addr = try self.pop();
+        const n = try self.fpop();
+        // TODO alignment error
+        const ptr = @intToPtr(*Float, addr);
+        ptr.* += n;
+    }
+
+    pub fn fParse(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        const str = stringAt(addr, len);
+        const str = arrayAt(u8, addr, len);
         const fl = parseFloat(str) catch |err| switch (err) {
             error.InvalidFloat => {
                 try self.fpush(0);
@@ -1506,7 +1531,7 @@ pub const VM = struct {
             .write = (permissions & file_write_flag) != 0,
         };
 
-        var f = std.fs.cwd().openFile(stringAt(addr, len), flags) catch |err| {
+        var f = std.fs.cwd().openFile(arrayAt(u8, addr, len), flags) catch |err| {
             try self.push(0);
             try self.push(forth_false);
             return;
@@ -1539,7 +1564,7 @@ pub const VM = struct {
         const addr = try self.pop();
 
         var ptr = @intToPtr(*std.fs.File, f);
-        var buf = stringAt(addr, n);
+        var buf = arrayAt(u8, addr, n);
         // TODO handle read errors
         const ct = ptr.read(buf) catch unreachable;
 
@@ -1555,7 +1580,7 @@ pub const VM = struct {
         var ptr = @intToPtr(*std.fs.File, f);
         var reader = ptr.reader();
 
-        var buf = stringAt(addr, n);
+        var buf = arrayAt(u8, addr, n);
         // TODO handle read errors
         const slc = reader.readUntilDelimiterOrEof(buf, '\n') catch unreachable;
         if (slc) |s| {
@@ -1616,7 +1641,7 @@ pub const VM = struct {
 
     // ===
 
-    pub fn panic(self: *Self) Error!void {
+    pub fn panic_(self: *Self) Error!void {
         return error.Panic;
     }
 };
