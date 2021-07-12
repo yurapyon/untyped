@@ -279,9 +279,8 @@ latest @ make-immediate
 : falign ( -- )
   float align-to ;
 
-\ todo check this works
-: move ( src n dest )
-  3dup nip < if
+: move ( src dest n )
+  3dup drop < if
     cmove>
   else
     cmove<

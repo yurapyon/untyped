@@ -155,7 +155,7 @@ pub const VM = struct {
         try ret.initBuiltins();
         ret.interpretBuffer(baseLib) catch |err| switch (err) {
             error.WordNotFound => {
-                std.debug.print("word not found: {}\n", .{ret.word_not_found});
+                std.debug.print("word not found: {s}\n", .{ret.word_not_found});
                 return err;
             },
             else => return err,
@@ -288,7 +288,7 @@ pub const VM = struct {
         try self.createBuiltin("f*", 0, &fTimes);
         try self.createBuiltin("f/", 0, &fDivide);
         try self.createBuiltin("float", 0, &fSize);
-        try self.createBuiltin("sin", 0, &fSin);
+        try self.createBuiltin("fsin", 0, &fSin);
         try self.createBuiltin("pi", 0, &pi);
         try self.createBuiltin("tau", 0, &tau);
         try self.createBuiltin("f@", 0, &fFetch);
@@ -299,6 +299,8 @@ pub const VM = struct {
         try self.createBuiltin("fdrop", 0, &fDrop);
         try self.createBuiltin("fdup", 0, &fDup);
         try self.createBuiltin("fswap", 0, &fSwap);
+        try self.createBuiltin("f>s", 0, &fToS);
+        try self.createBuiltin("s>f", 0, &sToF);
 
         try self.createBuiltin("r/o", 0, &fileRO);
         try self.createBuiltin("w/o", 0, &fileWO);
@@ -337,7 +339,7 @@ pub const VM = struct {
         self.sp += @sizeOf(Cell);
     }
 
-    pub fn idx(self: *Self, val: Cell) Error!Cell {
+    pub fn sidx(self: *Self, val: Cell) Error!Cell {
         const ptr = self.sp - (val + 1) * @sizeOf(Cell);
         if (ptr < @ptrToInt(self.stack)) {
             return error.StackIndexOutOfRange;
@@ -630,8 +632,8 @@ pub const VM = struct {
         self.should_bye = false;
         while (!self.should_bye) {
             try self.word();
-            const word_len = try self.idx(0);
-            const word_addr = try self.idx(1);
+            const word_len = try self.sidx(0);
+            const word_addr = try self.sidx(1);
             if (word_len == 0) {
                 _ = try self.pop();
                 _ = try self.pop();
@@ -1044,8 +1046,8 @@ pub const VM = struct {
 
     pub fn tick(self: *Self) Error!void {
         try self.word();
-        const word_len = try self.idx(0);
-        const word_addr = try self.idx(1);
+        const word_len = try self.sidx(0);
+        const word_addr = try self.sidx(1);
 
         try self.find();
         if ((try self.pop()) == forth_false) {
@@ -1276,7 +1278,7 @@ pub const VM = struct {
     pub fn type_(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        std.debug.print("{}", .{arrayAt(u8, addr, len)});
+        std.debug.print("{s}", .{arrayAt(u8, addr, len)});
     }
 
     //     pub fn key(self: *Self) Error!void {
@@ -1356,8 +1358,8 @@ pub const VM = struct {
     }
 
     pub fn cmoveUp(self: *Self) Error!void {
-        const dest = @intToPtr([*]u8, try self.pop());
         const len = try self.pop();
+        const dest = @intToPtr([*]u8, try self.pop());
         const src = @intToPtr([*]u8, try self.pop());
         {
             @setRuntimeSafety(false);
@@ -1369,8 +1371,8 @@ pub const VM = struct {
     }
 
     pub fn cmoveDown(self: *Self) Error!void {
-        const dest = @intToPtr([*]u8, try self.pop());
         const len = try self.pop();
+        const dest = @intToPtr([*]u8, try self.pop());
         const src = @intToPtr([*]u8, try self.pop());
         {
             @setRuntimeSafety(false);
@@ -1505,6 +1507,17 @@ pub const VM = struct {
         const b = try self.fpop();
         try self.fpush(a);
         try self.fpush(b);
+    }
+
+    pub fn fToS(self: *Self) Error!void {
+        const f = try self.fpop();
+        const s = @floatToInt(Cell, std.math.trunc(f));
+        try self.push(s);
+    }
+
+    pub fn sToF(self: *Self) Error!void {
+        const s = try self.pop();
+        try self.fpush(@intToFloat(Float, s));
     }
 
     // ===

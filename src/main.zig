@@ -39,7 +39,7 @@ pub fn demo(allocator: *Allocator) !void {
         vm.source_in = 0;
         vm.interpret() catch |err| switch (err) {
             error.WordNotFound => {
-                std.debug.print("word not found: {}\n", .{vm.word_not_found});
+                std.debug.print("word not found: {s}\n", .{vm.word_not_found});
                 return err;
             },
             else => return err,
@@ -51,7 +51,7 @@ pub fn demo(allocator: *Allocator) !void {
     try vm.drop();
     vm.interpret() catch |err| switch (err) {
         error.WordNotFound => {
-            std.debug.print("word not found: {}\n", .{vm.word_not_found});
+            std.debug.print("word not found: {s}\n", .{vm.word_not_found});
             return err;
         },
         else => return err,
