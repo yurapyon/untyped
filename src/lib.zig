@@ -15,6 +15,9 @@ const Allocator = std.mem.Allocator;
 //   error ( num -- ) which passes error num to zig
 //     can be used with zig enums
 // bye is needed twice to quit for some reason
+// separate things into separate libs
+//   float stuff
+//   file r/w stuff
 
 // ===
 
@@ -54,7 +57,7 @@ pub const VM = struct {
 
     pub const baseLib = @embedFile("base.fs");
 
-    // TODO make sure cell is u64
+    // TODO comptime make sure cell is u64
     pub const Cell = usize;
     pub const SCell = isize;
     pub const QuarterCell = u16;
@@ -64,9 +67,6 @@ pub const VM = struct {
 
     pub const forth_false: Cell = 0;
     pub const forth_true = ~forth_false;
-
-    // TODO use doBuiltin dummy function address
-    const builtin_fn_id = 0;
 
     const word_max_len = std.math.maxInt(u8);
     const word_immediate_flag = 0x2;
@@ -89,23 +89,26 @@ pub const VM = struct {
     const file_write_flag = 0x2;
     const file_included_max_size = 64 * 1024;
 
+    // TODO where is this used
     pub const ParseNumberResult = union(enum) {
         Float: Float,
         Cell: Cell,
     };
 
+    pub const XtType = enum(Cell) {
+        zig,
+        forth,
+    };
+
     allocator: Allocator,
 
     // execution
-    last_next: Cell,
-    next: Cell,
-    curr_xt: Cell,
+    return_to: Cell,
     should_bye: bool,
     should_quit: bool,
 
     lit_address: Cell,
     litFloat_address: Cell,
-    docol_address: Cell,
     quit_address: Cell,
 
     mem: []u8,
@@ -134,8 +137,7 @@ pub const VM = struct {
         var ret: Self = undefined;
 
         ret.allocator = allocator;
-        ret.last_next = 0;
-        ret.next = 0;
+        ret.return_to = 0;
 
         ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(Cell), null);
         ret.stack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[stack_start]));
@@ -171,8 +173,8 @@ pub const VM = struct {
     }
 
     fn initBuiltins(self: *Self) Error!void {
-        try self.createBuiltin("docol", 0, &docol);
-        self.docol_address = wordHeaderCodeFieldAddress(self.latest);
+        // TODO rename forth-fn-id, forth-word-id or something idk
+        try self.createBuiltin("forth-fn-id", 0, &forthFnId);
         try self.createBuiltin("exit", 0, &exit_);
         try self.createBuiltin("lit", 0, &lit);
         self.lit_address = wordHeaderCodeFieldAddress(self.latest);
@@ -244,6 +246,8 @@ pub const VM = struct {
         try self.createBuiltin(">cfa", 0, &getCfa);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
+        try self.createBuiltin("jump", 0, &jump);
+        try self.createBuiltin("nop", 0, &nop);
 
         try self.createBuiltin("true", 0, &true_);
         try self.createBuiltin("false", 0, &false_);
@@ -269,7 +273,7 @@ pub const VM = struct {
         try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
 
-        try self.createBuiltin(".s", 0, &showStack);
+        try self.createBuiltin(".s-debug", 0, &showStack);
 
         try self.createBuiltin("litstring", 0, &litString);
         try self.createBuiltin("type", 0, &type_);
@@ -391,6 +395,7 @@ pub const VM = struct {
 
     //;
 
+    // TODO dont take 'self'
     pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
@@ -398,6 +403,7 @@ pub const VM = struct {
     }
 
     // TODO handle masking the bits
+    //      dont take 'self'
     pub fn checkedWrite(
         self: *Self,
         comptime T: type,
@@ -409,7 +415,7 @@ pub const VM = struct {
         @intToPtr(*T, addr).* = val;
     }
 
-    pub fn arrayAt(comptime T: type, addr: Cell, len: Cell) []T {
+    pub fn sliceAt(comptime T: type, addr: Cell, len: Cell) []T {
         var str: []T = undefined;
         str.ptr = @intToPtr([*]T, addr);
         str.len = len;
@@ -493,12 +499,10 @@ pub const VM = struct {
     //  word     flags
 
     // builtins are:
-    // | WORD HEADER ... | builtin_fn_id | fn_ptr |
+    // | WORD HEADER ... | .zig   | fn_ptr |
 
     // forth words are:
-    // | WORD HEADER ... | DOCOL  | code ... | EXIT |
-
-    // code is executed 'immediately' if the first cell in its cfa is builtin_fn_id
+    // | WORD HEADER ... | .forth | xt ... | EXIT |
 
     pub fn createWordHeader(
         self: *Self,
@@ -556,7 +560,7 @@ pub const VM = struct {
         func: *const Builtin,
     ) Error!void {
         try self.createWordHeader(name, flags);
-        try self.push(builtin_fn_id);
+        try self.push(@enumToInt(XtType.zig));
         try self.comma();
         try self.push(@ptrToInt(func));
         try self.comma();
@@ -572,7 +576,7 @@ pub const VM = struct {
     }
 
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
-        const name = arrayAt(u8, addr, len);
+        const name = sliceAt(u8, addr, len);
 
         var check = self.latest;
         while (check != 0) : (check = wordHeaderPrevious(check)) {
@@ -607,30 +611,32 @@ pub const VM = struct {
     // ===
 
     pub fn execute(self: *Self, xt: Cell) Error!void {
-        // note: self.quit_address is just being used as a marker
-        self.last_next = self.quit_address;
-        self.next = self.quit_address;
-        self.curr_xt = xt;
-        var first = xt;
+        var curr_xt = xt;
+        self.return_to = 0; // 0 here is a marker for an addr that wont be in forth memory
 
+        // TODO clean up the should_bye and should_quit logic
         self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
-            if (self.curr_xt == self.quit_address) {
+            // TODO safety, use checkedRead and Write
+            // std.debug.print("align {}\n", .{curr_xt});
+            const lookahead = @intToPtr(*XtType, curr_xt).*;
+            switch (lookahead) {
+                .forth => {
+                    try self.rpush(self.return_to);
+                    self.return_to = curr_xt;
+                },
+                .zig => {
+                    const zig_fn = builtinFnPtr(curr_xt);
+                    try zig_fn.*(self);
+                },
+            }
+            if (self.return_to == 0) {
                 try self.quit();
                 break;
             }
-            if ((try self.checkedRead(Cell, first)) == builtin_fn_id) {
-                const fn_ptr = builtinFnPtr(first);
-                try fn_ptr.*(self);
-            } else {
-                self.last_next = self.next;
-                self.next = first;
-            }
-
-            self.curr_xt = self.next;
-            first = try self.checkedRead(Cell, self.curr_xt);
-            self.next += @sizeOf(Cell);
+            self.return_to += @sizeOf(Cell);
+            curr_xt = @intToPtr(*Cell, self.return_to).*;
         }
     }
 
@@ -667,7 +673,7 @@ pub const VM = struct {
                     try self.execute(xt);
                 }
             } else {
-                var str = arrayAt(u8, word_addr, word_len);
+                var str = sliceAt(u8, word_addr, word_len);
                 if (parseNumber(str, self.base) catch null) |num| {
                     if (is_compiling) {
                         try self.push(self.lit_address);
@@ -755,35 +761,37 @@ pub const VM = struct {
         try self.push(try self.nextChar());
     }
 
-    pub fn docol(self: *Self) Error!void {
-        try self.rpush(self.last_next);
-        self.next = self.curr_xt + @sizeOf(Cell);
+    pub fn forthFnId(self: *Self) Error!void {
+        try self.push(@enumToInt(XtType.forth));
     }
 
     pub fn exit_(self: *Self) Error!void {
-        self.next = try self.rpop();
+        self.return_to = try self.rpop();
     }
 
     pub fn lit(self: *Self) Error!void {
-        try self.push(try self.checkedRead(Cell, self.next));
-        self.next += @sizeOf(Cell);
+        try self.push(try self.checkedRead(Cell, self.return_to + @sizeOf(Cell)));
+        self.return_to += @sizeOf(Cell);
     }
 
     pub fn litFloat(self: *Self) Error!void {
-        try self.fpush(try self.checkedRead(Float, self.next));
-        self.next += @sizeOf(Cell);
+        try self.fpush(try self.checkedRead(Float, self.return_to + @sizeOf(Cell)));
+        self.return_to += @sizeOf(Float);
     }
 
+    // TODO test works
     pub fn executeForth(self: *Self) Error!void {
         const xt = try self.pop();
-        const first = @intToPtr(*Cell, xt).*;
-        if (first == builtin_fn_id) {
-            try builtinFnPtr(xt).*(self);
-        } else if (first == self.docol_address) {
-            try self.rpush(self.next);
-            self.next = xt + @sizeOf(Cell);
-        } else {
-            return error.ExecutionError;
+        const xt_type = @intToPtr(*XtType, xt).*;
+        switch (xt_type) {
+            .zig => {
+                try builtinFnPtr(xt).*(self);
+            },
+            .forth => {
+                // TODO test works
+                try self.rpush(self.return_to);
+                self.return_to = xt + @sizeOf(Cell);
+            },
         }
     }
 
@@ -968,7 +976,7 @@ pub const VM = struct {
         if (len == 0) {
             try self.createWordHeader("", 0);
         } else if (len < word_max_len) {
-            try self.createWordHeader(arrayAt(u8, addr, len), 0);
+            try self.createWordHeader(sliceAt(u8, addr, len), 0);
         } else {
             return error.WordTooLong;
         }
@@ -986,7 +994,7 @@ pub const VM = struct {
         const ret = self.findWord(addr, len) catch |err| {
             switch (err) {
                 error.WordNotFound => {
-                    self.word_not_found = arrayAt(u8, addr, len);
+                    self.word_not_found = sliceAt(u8, addr, len);
                     try self.push(addr);
                     try self.push(forth_false);
                     return;
@@ -1120,16 +1128,24 @@ pub const VM = struct {
     }
 
     pub fn branch(self: *Self) Error!void {
-        self.next +%= try self.checkedRead(Cell, self.next);
+        self.return_to +%= try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
     }
 
     pub fn zbranch(self: *Self) Error!void {
         if ((try self.pop()) == forth_false) {
-            self.next +%= try self.checkedRead(Cell, self.next);
+            try self.branch();
         } else {
-            self.next += @sizeOf(Cell);
+            self.return_to += @sizeOf(Cell);
         }
     }
+
+    // TODO note jump only works with forth words not builtins
+    pub fn jump(self: *Self) Error!void {
+        self.return_to = try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
+        self.return_to -= @sizeOf(Cell);
+    }
+
+    pub fn nop(_: *Self) Error!void {}
 
     //;
 
@@ -1252,7 +1268,7 @@ pub const VM = struct {
     pub fn parseNumberForth(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        const num = parseNumber(arrayAt(u8, addr, len), self.base) catch |err| switch (err) {
+        const num = parseNumber(sliceAt(u8, addr, len), self.base) catch |err| switch (err) {
             error.InvalidNumber => {
                 try self.push(0);
                 try self.push(forth_false);
@@ -1275,35 +1291,34 @@ pub const VM = struct {
     //;
 
     pub fn showStack(self: *Self) Error!void {
-        const len = (self.sp - @ptrToInt(self.stack)) / @sizeOf(Cell);
-        std.debug.print("stack: len: {}\n", .{len});
-        var i = len;
-        var p = @ptrToInt(self.stack);
-        while (p < self.sp) : (p += @sizeOf(Cell)) {
-            i -= 1;
-            std.debug.print("{}: 0x{x:.>16} {}\n", .{
-                i,
-                @intToPtr(*const Cell, p).*,
-                @intToPtr(*const Cell, p).*,
-            });
+        var stk: []Cell = undefined;
+        stk.ptr = self.stack;
+        stk.len = (self.sp - @ptrToInt(self.stack)) / @sizeOf(Cell);
+
+        std.debug.print("stack -- len: {}\n", .{stk.len});
+
+        var i: usize = 0;
+        while (i < stk.len) : (i += 1) {
+            const val = stk[stk.len - i - 1];
+            std.debug.print("{}: 0x{x:.>16} {}\n", .{ i, val, val });
         }
     }
 
     //;
 
+    // TODO test works
     pub fn litString(self: *Self) Error!void {
-        const len = try self.checkedRead(Cell, self.next);
-        self.next += @sizeOf(Cell);
-        try self.push(self.next);
+        const str_addr = self.return_to + 2 * @sizeOf(Cell);
+        const len = try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
+        try self.push(str_addr);
         try self.push(len);
-        self.next += len;
-        self.next = alignAddr(Cell, self.next);
+        self.return_to = alignAddr(Cell, str_addr + len) - @sizeOf(Cell);
     }
 
     pub fn type_(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        std.debug.print("{s}", .{arrayAt(u8, addr, len)});
+        std.debug.print("{s}", .{sliceAt(u8, addr, len)});
     }
 
     //     pub fn key(self: *Self) Error!void {
@@ -1325,7 +1340,7 @@ pub const VM = struct {
         try self.word();
         const len = try self.pop();
         const addr = try self.pop();
-        try self.push(arrayAt(u8, addr, len)[0]);
+        try self.push(sliceAt(u8, addr, len)[0]);
     }
 
     pub fn emit(self: *Self) Error!void {
@@ -1504,7 +1519,7 @@ pub const VM = struct {
     pub fn fParse(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
-        const str = arrayAt(u8, addr, len);
+        const str = sliceAt(u8, addr, len);
         const fl = parseFloat(str) catch |err| switch (err) {
             error.InvalidFloat => {
                 try self.fpush(0);
@@ -1569,7 +1584,7 @@ pub const VM = struct {
             .write = (permissions & file_write_flag) != 0,
         };
 
-        var f = std.fs.cwd().openFile(arrayAt(u8, addr, len), flags) catch {
+        var f = std.fs.cwd().openFile(sliceAt(u8, addr, len), flags) catch {
             try self.push(0);
             try self.push(forth_false);
             return;
@@ -1602,7 +1617,7 @@ pub const VM = struct {
         const addr = try self.pop();
 
         var ptr = @intToPtr(*std.fs.File, f);
-        var buf = arrayAt(u8, addr, n);
+        var buf = sliceAt(u8, addr, n);
         // TODO handle read errors
         const ct = ptr.read(buf) catch unreachable;
 
@@ -1618,7 +1633,7 @@ pub const VM = struct {
         var ptr = @intToPtr(*std.fs.File, f);
         var reader = ptr.reader();
 
-        var buf = arrayAt(u8, addr, n);
+        var buf = sliceAt(u8, addr, n);
         // TODO handle read errors
         const slc = reader.readUntilDelimiterOrEof(buf, '\n') catch unreachable;
         if (slc) |s| {
