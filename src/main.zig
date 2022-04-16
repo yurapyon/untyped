@@ -4,17 +4,16 @@ const Allocator = std.mem.Allocator;
 //;
 
 const lib = @import("lib.zig");
-usingnamespace lib;
 
 //;
 
-pub fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
+pub fn readFile(allocator: Allocator, filename: []const u8) ![]u8 {
     var file = try std.fs.cwd().openFile(filename, .{ .read = true });
     defer file.close();
     return file.readToEndAlloc(allocator, std.math.maxInt(usize));
 }
 
-pub fn demo(allocator: *Allocator) !void {
+pub fn demo(allocator: Allocator) !void {
     var to_load: ?[:0]u8 = null;
     var i: usize = 0;
     var args = std.process.args();
@@ -28,12 +27,12 @@ pub fn demo(allocator: *Allocator) !void {
         i += 1;
     }
 
-    var vm = try VM.init(allocator);
+    var vm = try lib.VM.init(allocator);
     defer vm.deinit();
 
     if (to_load) |filename| {
         var f = try readFile(allocator, filename);
-        vm.source_user_input = VM.forth_false;
+        vm.source_user_input = lib.VM.forth_false;
         vm.source_ptr = @ptrToInt(f.ptr);
         vm.source_len = f.len;
         vm.source_in = 0;
@@ -46,7 +45,7 @@ pub fn demo(allocator: *Allocator) !void {
         };
     }
 
-    vm.source_user_input = VM.forth_true;
+    vm.source_user_input = lib.VM.forth_true;
     try vm.refill();
     try vm.drop();
     vm.interpret() catch |err| switch (err) {

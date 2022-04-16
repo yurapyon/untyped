@@ -1,1 +1,4 @@
+#!/bin/sh
+
 zig build --prefix forth -Drelease-fast=true install
+# zig build --prefix forth install

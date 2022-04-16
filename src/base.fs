@@ -772,6 +772,7 @@ create u.buffer 8 cell * allot
   flip drop      ( aligned-start this-size )
   +field ;
 
+\ TODO this should be [compile] +field
 : cfield +field ;
 
 : ffield ( start this-size "name" -- end-aligned )

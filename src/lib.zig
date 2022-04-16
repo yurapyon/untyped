@@ -57,6 +57,7 @@ pub const VM = struct {
     // TODO make sure cell is u64
     pub const Cell = usize;
     pub const SCell = isize;
+    pub const QuarterCell = u16;
     pub const HalfCell = u32;
     pub const Builtin = fn (self: *Self) Error!void;
     pub const Float = f32;
@@ -93,7 +94,7 @@ pub const VM = struct {
         Cell: Cell,
     };
 
-    allocator: *Allocator,
+    allocator: Allocator,
 
     // execution
     last_next: Cell,
@@ -129,7 +130,7 @@ pub const VM = struct {
 
     word_not_found: []u8,
 
-    pub fn init(allocator: *Allocator) Error!Self {
+    pub fn init(allocator: Allocator) Error!Self {
         var ret: Self = undefined;
 
         ret.allocator = allocator;
@@ -224,6 +225,9 @@ pub const VM = struct {
         try self.createBuiltin("c@", 0, &fetchByte);
         try self.createBuiltin("c!", 0, &storeByte);
         try self.createBuiltin("c,", 0, &commaByte);
+        try self.createBuiltin("q@", 0, &fetchQuarter);
+        try self.createBuiltin("q!", 0, &storeQuarter);
+        try self.createBuiltin("q,", 0, &commaQuarter);
         try self.createBuiltin("h@", 0, &fetchHalf);
         try self.createBuiltin("h!", 0, &storeHalf);
         try self.createBuiltin("h,", 0, &commaHalf);
@@ -388,6 +392,7 @@ pub const VM = struct {
     //;
 
     pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
+        _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
         return @intToPtr(*const T, addr).*;
     }
@@ -399,6 +404,7 @@ pub const VM = struct {
         addr: Cell,
         val: T,
     ) Error!void {
+        _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
         @intToPtr(*T, addr).* = val;
     }
@@ -467,7 +473,7 @@ pub const VM = struct {
         {
             return error.InvalidFloat;
         }
-        return std.fmt.parseFloat(Float, str) catch |_| {
+        return std.fmt.parseFloat(Float, str) catch {
             return error.InvalidFloat;
         };
     }
@@ -1027,6 +1033,23 @@ pub const VM = struct {
         self.here += 1;
     }
 
+    pub fn fetchQuarter(self: *Self) Error!void {
+        const addr = try self.pop();
+        try self.push(try self.checkedRead(QuarterCell, addr));
+    }
+
+    pub fn storeQuarter(self: *Self) Error!void {
+        const addr = try self.pop();
+        const val = try self.pop();
+        try self.checkedWrite(QuarterCell, addr, @intCast(QuarterCell, val & 0xffffffff));
+    }
+
+    pub fn commaQuarter(self: *Self) Error!void {
+        try self.push(self.here);
+        try self.storeQuarter();
+        self.here += @sizeOf(QuarterCell);
+    }
+
     pub fn fetchHalf(self: *Self) Error!void {
         const addr = try self.pop();
         try self.push(try self.checkedRead(HalfCell, addr));
@@ -1048,6 +1071,8 @@ pub const VM = struct {
         try self.word();
         const word_len = try self.sidx(0);
         const word_addr = try self.sidx(1);
+        _ = word_len;
+        _ = word_addr;
 
         try self.find();
         if ((try self.pop()) == forth_false) {
@@ -1178,13 +1203,13 @@ pub const VM = struct {
     pub fn lshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a >> @intCast(u6, ct & 0x3f));
+        try self.push(a << @intCast(u6, ct & 0x3f));
     }
 
     pub fn rshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a << @intCast(u6, ct & 0x3f));
+        try self.push(a >> @intCast(u6, ct & 0x3f));
     }
 
     //;
@@ -1544,7 +1569,7 @@ pub const VM = struct {
             .write = (permissions & file_write_flag) != 0,
         };
 
-        var f = std.fs.cwd().openFile(arrayAt(u8, addr, len), flags) catch |err| {
+        var f = std.fs.cwd().openFile(arrayAt(u8, addr, len), flags) catch {
             try self.push(0);
             try self.push(forth_false);
             return;
@@ -1655,6 +1680,7 @@ pub const VM = struct {
     // ===
 
     pub fn panic_(self: *Self) Error!void {
+        _ = self;
         return error.Panic;
     }
 };
