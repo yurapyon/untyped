@@ -18,12 +18,17 @@ const Allocator = std.mem.Allocator;
 // separate things into separate libs
 //   float stuff
 //   file r/w stuff
+//   other data sizes besides cell
 // intToPtr alignment errors
+// figure out how jump relates to lit, and maybe make it more general
 
 // ===
 
 // stack pointers point to 1 beyond the top of the stack
 //   should i keep it this way?
+
+// return_to is generally in an invalid state until the end of executing an xt
+//   might work to advance it early but idt it matters
 
 // state == forth_true in compilation state
 
@@ -285,12 +290,13 @@ pub const VM = struct {
 
         try self.createBuiltin("allocate", 0, &allocate);
         try self.createBuiltin("free", 0, &free_);
-        // TODO resize
+        // TODO mem resize word
         try self.createBuiltin("cmove>", 0, &cmoveUp);
         try self.createBuiltin("cmove<", 0, &cmoveDown);
         try self.createBuiltin("mem=", 0, &memEql);
 
         // TODO float comparisons
+        //      i think pi and tau could be fconstants in forth
         try self.createBuiltin("f.", 0, &fPrint);
         try self.createBuiltin("f+", 0, &fPlus);
         try self.createBuiltin("f-", 0, &fMinus);
@@ -403,7 +409,7 @@ pub const VM = struct {
         return @intToPtr(*const T, addr).*;
     }
 
-    // TODO handle masking the bits
+    // TODO handle masking the bits of val to fit sizeof(T)
     //      dont take 'self'
     pub fn checkedWrite(
         self: *Self,
@@ -620,7 +626,6 @@ pub const VM = struct {
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
             // TODO safety, use checkedRead and Write
-            // std.debug.print("align {}\n", .{curr_xt});
             const lookahead = @intToPtr(*XtType, curr_xt).*;
             switch (lookahead) {
                 .forth => {
@@ -1283,7 +1288,7 @@ pub const VM = struct {
     pub fn plusStore(self: *Self) Error!void {
         const addr = try self.pop();
         const n = try self.pop();
-        // TODO alignment error
+        // TODO use checkedWrite
         const ptr = @intToPtr(*Cell, addr);
         ptr.* +%= n;
     }
@@ -1307,6 +1312,7 @@ pub const VM = struct {
     //;
 
     // TODO test works
+    //      seems to work
     pub fn litString(self: *Self) Error!void {
         const str_addr = self.return_to + 2 * @sizeOf(Cell);
         const len = try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));

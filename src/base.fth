@@ -238,10 +238,9 @@ latest @ make-immediate
 : immediate?
   >flags flag,immediate and ;
 
-\ todo change to have normal arg order
-: within     ( val max min -- t/f )
-  >r over r> ( val max val min )
-  >= -rot < and ;
+: within     ( val min max -- t/f )
+  >r over r> ( val min val max )
+  < -rot >= and ;
 
 : decimal 10 base ! ;
 : hex 16 base ! ;
@@ -751,7 +750,8 @@ create u.buffer 8 cell * allot
 \ TODO doesnt work with builtins,
 \   check if cfa is builitin,
 \   dont do anything in that case
-\ TODO test this is doing what it should
+\ TODO test this doesnt put anything on return stack
+\      seems to work
 : tailcall
   word find unwrap dup immediate? if
     ['] jump ,
@@ -787,6 +787,7 @@ create u.buffer 8 cell * allot
 : enum ( value "name" -- value+1 )
   dup constant 1+ ;
 
+\ todo use lshift
 : flag ( value "name" -- value<<1 )
   dup constant 2* ;
 
