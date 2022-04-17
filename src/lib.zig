@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 // separate things into separate libs
 //   float stuff
 //   file r/w stuff
+// intToPtr alignment errors
 
 // ===
 
@@ -55,7 +56,7 @@ pub const VM = struct {
         Panic,
     } || Allocator.Error;
 
-    pub const baseLib = @embedFile("base.fs");
+    pub const baseLib = @embedFile("base.fth");
 
     // TODO comptime make sure cell is u64
     pub const Cell = usize;
@@ -779,18 +780,17 @@ pub const VM = struct {
         self.return_to += @sizeOf(Float);
     }
 
-    // TODO test works
     pub fn executeForth(self: *Self) Error!void {
         const xt = try self.pop();
-        const xt_type = @intToPtr(*XtType, xt).*;
-        switch (xt_type) {
+        // TODO checkedRead
+        const lookahead = @intToPtr(*XtType, xt).*;
+        switch (lookahead) {
             .zig => {
                 try builtinFnPtr(xt).*(self);
             },
             .forth => {
-                // TODO test works
                 try self.rpush(self.return_to);
-                self.return_to = xt + @sizeOf(Cell);
+                self.return_to = xt;
             },
         }
     }
@@ -1511,7 +1511,7 @@ pub const VM = struct {
     pub fn fPlusStore(self: *Self) Error!void {
         const addr = try self.pop();
         const n = try self.fpop();
-        // TODO alignment error
+        // TODO checked read/write
         const ptr = @intToPtr(*Float, addr);
         ptr.* += n;
     }
