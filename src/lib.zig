@@ -93,7 +93,6 @@ pub const VM = struct {
 
     const file_read_flag = 0x1;
     const file_write_flag = 0x2;
-    const file_included_max_size = 64 * 1024;
 
     // TODO where is this used
     pub const ParseNumberResult = union(enum) {
@@ -993,6 +992,7 @@ pub const VM = struct {
     //         try self.push(slc.len);
     //     }
 
+    // TODO 0 0 find should return 0 false always
     pub fn find(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
