@@ -49,6 +49,12 @@ latest @ make-immediate
 : mod /mod drop ;
 : 2* 2 * ;
 
+: f2dup fover fover ;
+: fflip fswap frot ;
+
+: fnegate -1. f* ;
+: frecip 1. fswap f/ ;
+
 : if
   ['] 0branch ,
   here @ 0 , ; immediate
@@ -242,9 +248,17 @@ latest @ make-immediate
   >r over r> ( val min val max )
   < -rot >= and ;
 
+: min ( a b -- min ) 2dup > if swap then drop ;
+: max ( a b -- min ) 2dup < if swap then drop ;
+: clamp ( val min max -- clamped ) rot min max ;
+
 : decimal 10 base ! ;
 : hex 16 base ! ;
 : octal 8 base ! ;
+
+: fmin ( f: a b -- f: min ) f2dup f> if fswap then fdrop ;
+: fmax ( f: a b -- f: min ) f2dup f< if fswap then fdrop ;
+: fclamp ( f: val min max -- f: clamped ) frot fmin fmax ;
 
 \ ===
 
@@ -585,9 +599,10 @@ latest @ make-immediate
 : chop-digit ( u -- u-lastdigit lastdigit )
   base @ /mod swap ;
 
+\ todo why is this 8 cells
 create u.buffer 8 cell * allot
 
-: u. ( u -- )
+: read-to-u.buffer ( u -- uwidth )
   dup uwidth dup >r
   begin                   ( u uwidth-acc )
     1- >r
@@ -595,8 +610,9 @@ create u.buffer 8 cell * allot
     u.buffer r@ + c!
     r>
   dup 0= until
-  2drop
-  u.buffer r> type ;
+  2drop r> ;
+
+: u. ( u -- ) read-to-u.buffer u.buffer swap type ;
 
 : .s ( -- )
   [char] < emit
@@ -913,3 +929,12 @@ create include-buf include-buf-size allot
 
 : include
   word included ;
+
+\ ===
+
+\ TODO make this better
+
+-6 value timezone
+
+: convert-hour 24 timezone + + 24 mod ;
+: date dateUTC >r >r >r convert-hour r> r> r> ;

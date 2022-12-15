@@ -20,8 +20,9 @@ const Allocator = std.mem.Allocator;
 //   other data sizes besides cell
 // intToPtr alignment errors
 // figure out how jump relates to lit, and maybe make it more general
+// mods with signed ints does not work
 
-// bye is needed twice to quit for some reason ? is this still the case
+// bye is needed twice to quit for some reason   ? is this still the case
 
 // ===
 
@@ -296,7 +297,7 @@ pub const VM = struct {
         try self.createBuiltin("cmove<", 0, &cmoveDown);
         try self.createBuiltin("mem=", 0, &memEql);
 
-        // TODO float comparisons
+        // TODO float equality/epsilon
         //      i think pi and tau could be fconstants in forth
         try self.createBuiltin("f.", 0, &fPrint);
         try self.createBuiltin("f+", 0, &fPlus);
@@ -315,17 +316,29 @@ pub const VM = struct {
         try self.createBuiltin("fdrop", 0, &fDrop);
         try self.createBuiltin("fdup", 0, &fDup);
         try self.createBuiltin("fswap", 0, &fSwap);
+        try self.createBuiltin("fover", 0, &fOver);
+        try self.createBuiltin("frot", 0, &fRot);
+        try self.createBuiltin("f-rot", 0, &fNRot);
+        try self.createBuiltin("fpick", 0, &fPick);
         try self.createBuiltin("f>s", 0, &fToS);
         try self.createBuiltin("s>f", 0, &sToF);
+        try self.createBuiltin("f<", 0, &flt);
+        try self.createBuiltin("f>", 0, &fgt);
+        try self.createBuiltin(".fs", 0, &fShowStack);
+        try self.createBuiltin("ffloor", 0, &fFloor);
+        try self.createBuiltin("fpow", 0, &fPow);
 
         try self.createBuiltin("r/o", 0, &fileRO);
         try self.createBuiltin("w/o", 0, &fileWO);
         try self.createBuiltin("r/w", 0, &fileRW);
         try self.createBuiltin("open-file", 0, &fileOpen);
         try self.createBuiltin("close-file", 0, &fileClose);
+        // TODO test works
+        try self.createBuiltin("reposition-file", 0, &fileReposition);
         try self.createBuiltin("file-size", 0, &fileSize);
         try self.createBuiltin("read-file", 0, &fileRead);
         try self.createBuiltin("read-line", 0, &fileReadLine);
+        try self.createBuiltin("write-file", 0, &fileWrite);
 
         try self.createBuiltin("source-user-input", 0, &sourceUserInput);
         try self.createBuiltin("source-ptr", 0, &sourcePtr);
@@ -334,6 +347,9 @@ pub const VM = struct {
         try self.createBuiltin("refill", 0, &refill);
 
         try self.createBuiltin("panic", 0, &panic_);
+
+        try self.createBuiltin("dateUTC", 0, &dateUTC);
+        try self.createBuiltin("sleep", 0, &sleep);
     }
 
     //;
@@ -784,7 +800,7 @@ pub const VM = struct {
 
     pub fn litFloat(self: *Self) Error!void {
         try self.fpush(try self.checkedRead(Float, self.return_to + @sizeOf(Cell)));
-        self.return_to += @sizeOf(Float);
+        self.return_to += @sizeOf(Cell);
     }
 
     pub fn executeForth(self: *Self) Error!void {
@@ -1055,6 +1071,7 @@ pub const VM = struct {
     }
 
     pub fn storeQuarter(self: *Self) Error!void {
+        // TODO this is a pretty basic >number as it doest return where in the string it stopped parsing
         const addr = try self.pop();
         const val = try self.pop();
         try self.checkedWrite(QuarterCell, addr, @intCast(QuarterCell, val & 0xffffffff));
@@ -1273,6 +1290,7 @@ pub const VM = struct {
         try self.push(@sizeOf(HalfCell));
     }
 
+    // TODO this is a pretty basic >number as it doest return where in the string it stopped parsing
     pub fn parseNumberForth(self: *Self) Error!void {
         const len = try self.pop();
         const addr = try self.pop();
@@ -1558,15 +1576,84 @@ pub const VM = struct {
         try self.fpush(b);
     }
 
+    pub fn fOver(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.fpush(b);
+        try self.fpush(a);
+        try self.fpush(b);
+    }
+
+    pub fn fRot(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        const c = try self.fpop();
+        try self.fpush(b);
+        try self.fpush(a);
+        try self.fpush(c);
+    }
+
+    pub fn fNRot(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        const c = try self.fpop();
+        try self.fpush(a);
+        try self.fpush(c);
+        try self.fpush(b);
+    }
+
+    pub fn fPick(self: *Self) Error!void {
+        const at = try self.pop();
+        const tos = self.fsp;
+        const offset = (1 + at) * @sizeOf(Float);
+        try self.fpush(try self.checkedRead(Float, tos - offset));
+    }
+
     pub fn fToS(self: *Self) Error!void {
         const f = try self.fpop();
-        const s = @floatToInt(Cell, std.math.trunc(f));
-        try self.push(s);
+        const s = @floatToInt(SCell, std.math.trunc(f));
+        try self.push(@bitCast(Cell, s));
     }
 
     pub fn sToF(self: *Self) Error!void {
-        const s = try self.pop();
+        const s = @bitCast(SCell, try self.pop());
         try self.fpush(@intToFloat(Float, s));
+    }
+
+    pub fn flt(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.push(if (b < a) forth_true else forth_false);
+    }
+
+    pub fn fgt(self: *Self) Error!void {
+        const a = try self.fpop();
+        const b = try self.fpop();
+        try self.push(if (b > a) forth_true else forth_false);
+    }
+
+    pub fn fShowStack(self: *Self) Error!void {
+        var stk: []Float = undefined;
+        stk.ptr = self.fstack;
+        stk.len = (self.fsp - @ptrToInt(self.fstack)) / @sizeOf(Float);
+
+        std.debug.print("f<{}> ", .{stk.len});
+
+        var i: usize = 0;
+        while (i < stk.len) : (i += 1) {
+            std.debug.print("{d} ", .{stk[i]});
+        }
+    }
+
+    pub fn fFloor(self: *Self) Error!void {
+        const f = try self.fpop();
+        try self.fpush(std.math.floor(f));
+    }
+
+    pub fn fPow(self: *Self) Error!void {
+        const exp = try self.fpop();
+        const f = try self.fpop();
+        try self.fpush(std.math.pow(Float, f, exp));
     }
 
     // ===
@@ -1614,6 +1701,17 @@ pub const VM = struct {
         self.allocator.destroy(ptr);
     }
 
+    pub fn fileReposition(self: *Self) Error!void {
+        const f = try self.pop();
+        const to = try self.pop();
+        var ptr = @intToPtr(*std.fs.File, f);
+        ptr.seekTo(to) catch {
+            try self.push(forth_false);
+            return;
+        };
+        try self.push(forth_true);
+    }
+
     pub fn fileSize(self: *Self) Error!void {
         const f = try self.pop();
         var ptr = @intToPtr(*std.fs.File, f);
@@ -1633,7 +1731,7 @@ pub const VM = struct {
         try self.push(ct);
     }
 
-    // ( buffer n file -- read-ct delimiter-found? )
+    // ( buffer n file -- read-ct delimiter-found?/not-eof? )
     pub fn fileReadLine(self: *Self) Error!void {
         const f = try self.pop();
         const n = try self.pop();
@@ -1652,6 +1750,21 @@ pub const VM = struct {
             try self.push(0);
             try self.push(forth_false);
         }
+    }
+
+    // ( buffer n file -- write-ct )
+    pub fn fileWrite(self: *Self) Error!void {
+        const f = try self.pop();
+        const n = try self.pop();
+        const addr = try self.pop();
+
+        var ptr = @intToPtr(*std.fs.File, f);
+        var writer = ptr.writer();
+        var buf = sliceAt(u8, addr, n);
+
+        // TODO handle errors
+        const ct = writer.write(buf) catch unreachable;
+        try self.push(ct);
     }
 
     // ===
@@ -1706,5 +1819,35 @@ pub const VM = struct {
     pub fn panic_(self: *Self) Error!void {
         _ = self;
         return error.Panic;
+    }
+
+    // ===
+
+    pub fn sleep(self: *Self) Error!void {
+        std.time.sleep(try self.pop());
+    }
+
+    pub fn dateUTC(self: *Self) Error!void {
+        const time = std.time.timestamp();
+        const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(u64, time) };
+        const ed = es.getEpochDay();
+
+        const yd = ed.calculateYearDay();
+        const year: Cell = yd.year;
+        const md = yd.calculateMonthDay();
+        const month: Cell = md.month.numeric();
+        const day_of_month: Cell = md.day_index;
+
+        const ds = es.getDaySeconds();
+        const hr: Cell = ds.getHoursIntoDay();
+        const min: Cell = ds.getMinutesIntoHour();
+        const sec: Cell = ds.getSecondsIntoMinute();
+
+        try self.push(sec);
+        try self.push(min);
+        try self.push(hr);
+        try self.push(day_of_month);
+        try self.push(month);
+        try self.push(year);
     }
 };

@@ -7,6 +7,8 @@ const lib = @import("lib.zig");
 
 //;
 
+// TODO commandline args
+
 pub fn readFile(allocator: Allocator, filename: []const u8) ![]u8 {
     var file = try std.fs.cwd().openFile(filename, .{ .read = true });
     defer file.close();
