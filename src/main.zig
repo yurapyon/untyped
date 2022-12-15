@@ -45,6 +45,10 @@ pub fn demo(allocator: Allocator) !void {
         };
     }
 
+    if (vm.should_bye) {
+        return;
+    }
+
     vm.source_user_input = lib.VM.forth_true;
     try vm.refill();
     try vm.drop();

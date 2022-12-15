@@ -300,8 +300,8 @@ latest @ make-immediate
   word define
   forth-fn-id ,
   ['] lit , here @ 3 cells + ,
-  ['] nop ,
-  ['] exit , ;
+  ['] exit ,
+  ['] nop , ;
 
 : does>,redirect-latest ( code-addr -- )
   ['] jump latestxt 3 cells + !

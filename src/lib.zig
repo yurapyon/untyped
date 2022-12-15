@@ -14,13 +14,14 @@ const Allocator = std.mem.Allocator;
 //   error handling in general
 //   error ( num -- ) which passes error num to zig
 //     can be used with zig enums
-// bye is needed twice to quit for some reason
 // separate things into separate libs
 //   float stuff
 //   file r/w stuff
 //   other data sizes besides cell
 // intToPtr alignment errors
 // figure out how jump relates to lit, and maybe make it more general
+
+// bye is needed twice to quit for some reason ? is this still the case
 
 // ===
 
@@ -57,6 +58,7 @@ pub const VM = struct {
         ExecutionError,
         AlignmentError,
 
+        EarlyBye,
         EndOfInput,
         Panic,
     } || Allocator.Error;
@@ -647,7 +649,8 @@ pub const VM = struct {
 
     pub fn interpret(self: *Self) Error!void {
         self.should_bye = false;
-        while (!self.should_bye) {
+        var out_of_input = false;
+        while (!self.should_bye and !out_of_input) {
             try self.word();
             const word_len = try self.sidx(0);
             const word_addr = try self.sidx(1);
@@ -657,7 +660,7 @@ pub const VM = struct {
                 try self.refill();
                 const res = try self.pop();
                 if (res == forth_false) {
-                    self.should_bye = true;
+                    out_of_input = true;
                 }
                 continue;
             }
