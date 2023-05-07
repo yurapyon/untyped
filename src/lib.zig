@@ -348,8 +348,11 @@ pub const VM = struct {
 
         try self.createBuiltin("panic", 0, &panic_);
 
-        try self.createBuiltin("dateUTC", 0, &dateUTC);
         try self.createBuiltin("sleep", 0, &sleep);
+
+        try self.createBuiltin("calc-timestamp", 0, &calcTimestamp);
+        try self.createBuiltin("now", 0, &now);
+        try self.createBuiltin("timezone", 0, &timezone);
     }
 
     //;
@@ -1274,12 +1277,12 @@ pub const VM = struct {
     }
 
     pub fn divMod(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        const q = b / a;
-        const mod = b % a;
-        try self.push(mod);
-        try self.push(q);
+        const a = @intCast(SCell, try self.pop());
+        const b = @intCast(SCell, try self.pop());
+        const q = @divTrunc(b, a);
+        const mod = @mod(b, a);
+        try self.push(@bitCast(Cell, mod));
+        try self.push(@bitCast(Cell, q));
     }
 
     pub fn cell(self: *Self) Error!void {
@@ -1827,8 +1830,9 @@ pub const VM = struct {
         std.time.sleep(try self.pop());
     }
 
-    pub fn dateUTC(self: *Self) Error!void {
-        const time = std.time.timestamp();
+    pub fn calcTimestamp(self: *Self) Error!void {
+        const time = try self.pop();
+
         const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(u64, time) };
         const ed = es.getEpochDay();
 
@@ -1849,5 +1853,21 @@ pub const VM = struct {
         try self.push(day_of_month);
         try self.push(month);
         try self.push(year);
+    }
+
+    pub fn now(self: *Self) Error!void {
+        const time = std.time.timestamp();
+        // TODO intcast here? or intCast->SCell then bitCast->Cell ?
+        try self.push(@intCast(Cell, time));
+    }
+
+    pub fn timezone(self: *Self) Error!void {
+        const c = @cImport({
+            @cInclude("time.h");
+        });
+        c.tzset();
+
+        const offset = c.timezone;
+        try self.push(@intCast(Cell, offset));
     }
 };

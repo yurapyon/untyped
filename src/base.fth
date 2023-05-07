@@ -249,7 +249,7 @@ latest @ make-immediate
   < -rot >= and ;
 
 : min ( a b -- min ) 2dup > if swap then drop ;
-: max ( a b -- min ) 2dup < if swap then drop ;
+: max ( a b -- max ) 2dup < if swap then drop ;
 : clamp ( val min max -- clamped ) rot min max ;
 
 : decimal 10 base ! ;
@@ -257,7 +257,7 @@ latest @ make-immediate
 : octal 8 base ! ;
 
 : fmin ( f: a b -- f: min ) f2dup f> if fswap then fdrop ;
-: fmax ( f: a b -- f: min ) f2dup f< if fswap then fdrop ;
+: fmax ( f: a b -- f: max ) f2dup f< if fswap then fdrop ;
 : fclamp ( f: val min max -- f: clamped ) frot fmin fmax ;
 
 \ ===
@@ -271,11 +271,7 @@ latest @ make-immediate
 
 : aligned-to ( addr align -- a-addr )
   2dup mod ( addr align off-aligned )
-  ?dup if
-    - +
-  else
-    drop
-  then ;
+  ?dup if - + else drop then ;
 
 : align-to ( align -- )
   here @ swap aligned-to here ! ;
@@ -455,9 +451,9 @@ latest @ make-immediate
 
 : char>digit ( hex-char -- u )
   case
-  dup [char] 9 [char] 0 within if [char] 0 -      else
-  dup [char] Z [char] A within if [char] A - 10 + else
-  dup [char] z [char] a within if [char] a - 10 + else
+  dup [char] 0 [char] 9 within if [char] 0 -      else
+  dup [char] A [char] Z within if [char] A - 10 + else
+  dup [char] a [char] z within if [char] a - 10 + else
     \ TODO error
     drop 0
   endcase ;
@@ -568,24 +564,14 @@ latest @ make-immediate
 \ ===
 
 : repeat-char ( ct char -- )
-  swap 0 ( char ct acc )
-  begin
-    2dup >
-  while
-    2 pick emit
-    1+
-  repeat
-  3drop ;
+  swap 0 ?do dup emit loop drop ;
 
 : spaces ( n -- )
   space repeat-char ;
 
 : digit>char
-  dup 10 < if
-    [char] 0
-  else
-    10 - [char] a
-  then
+  dup 10 <
+  if [char] 0 else 10 - [char] a then
   + ;
 
 : uwidth ( u -- width )
@@ -669,7 +655,7 @@ create u.buffer 8 cell * allot
   false ;
 
 : printable? ( ch -- t/f )
-  126 32 within ;
+  32 126 within ;
 
 : dump ( addr len -- )
   base @ >r
@@ -722,7 +708,7 @@ create u.buffer 8 cell * allot
   cr ;
 
 : in-memory?
-  mem mem-size + mem within ;
+  mem mem mem-size + within ;
 
 : see
   word find drop
@@ -757,8 +743,7 @@ create u.buffer 8 cell * allot
   2drop ;
 
 : recurse
-  latestxt ,
-  ; immediate
+  latestxt , ; immediate
 
 \ note: if called with an immediate word,
 \   assumes that word will compile the address
@@ -880,8 +865,7 @@ create include-buf include-buf-size allot
 0 value include-buf-at
 
 : last-saved-input
-  include-buf include-buf-at saved-source * +
-  ;
+  include-buf include-buf-at saved-source * + ;
 
 : save-input
   last-saved-input
@@ -889,8 +873,7 @@ create include-buf include-buf-size allot
   dup saved-source.ptr source-ptr @ swap !
   dup saved-source.len source-len @ swap !
       saved-source.in >in @ swap !
-  1 +to include-buf-at
-  ;
+  1 +to include-buf-at ;
 
 : restore-input
   -1 +to include-buf-at
@@ -898,8 +881,7 @@ create include-buf include-buf-size allot
   dup saved-source.user-input @ source-user-input !
   dup saved-source.ptr @ source-ptr !
   dup saved-source.len @ source-len !
-      saved-source.in @ >in !
-  ;
+      saved-source.in @ >in ! ;
 
 : evaluate ( addr len -- )
   save-input
@@ -932,9 +914,4 @@ create include-buf include-buf-size allot
 
 \ ===
 
-\ TODO make this better
-
--6 value timezone
-
-: convert-hour 24 timezone + + 24 mod ;
-: date dateUTC >r >r >r convert-hour r> r> r> ;
+: date now timezone + calc-timestamp ;
