@@ -1676,25 +1676,20 @@ pub const VM = struct {
         const len = try self.pop();
         const addr = try self.pop();
 
+        var flags = std.fs.File.OpenFlags{ .mode = .read_only };
+
         const read_access =
             (permissions & file_read_flag) != 0;
         const write_access =
             (permissions & file_write_flag) != 0;
 
-        var open_mode: std.fs.File.OpenMode = undefined;
-
         if (read_access and write_access) {
-            open_mode = .read_write;
+            flags.mode = .read_write;
         } else if (read_access) {
-            open_mode = .read_only;
+            flags.mode = .read_only;
         } else if (write_access) {
-            open_mode = .write_only;
-        } else {
-            // TODO what to do here?, for now just set to read_only
-            open_mode = .read_only;
+            flags.mode = .write_only;
         }
-
-        var flags = std.fs.File.OpenFlags{ .mode = open_mode };
 
         var f = std.fs.cwd().openFile(sliceAt(u8, addr, len), flags) catch {
             try self.push(0);
