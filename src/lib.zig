@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 //   float stuff
 //   file r/w stuff
 //   other data sizes besides cell
-// intToPtr alignment errors
+// ptrFromInt alignment errors
 // figure out how jump relates to lit, and maybe make it more general
 // mods with signed ints does not work
 
@@ -148,20 +148,20 @@ pub const VM = struct {
         ret.return_to = 0;
 
         ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(Cell), null);
-        ret.stack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[stack_start]));
-        ret.rstack = @ptrCast([*]Cell, @alignCast(@alignOf(Cell), &ret.mem[rstack_start]));
-        ret.fstack = @ptrCast([*]Float, @alignCast(@alignOf(Cell), &ret.mem[fstack_start]));
-        ret.input_buffer = @ptrCast([*]u8, &ret.mem[input_buffer_start]);
-        ret.dictionary = @ptrCast([*]u8, &ret.mem[dictionary_start]);
+        ret.stack = @ptrCast(@alignCast(&ret.mem[stack_start]));
+        ret.rstack = @ptrCast(@alignCast(&ret.mem[rstack_start]));
+        ret.fstack = @ptrCast(@alignCast(&ret.mem[fstack_start]));
+        ret.input_buffer = @ptrCast(&ret.mem[input_buffer_start]);
+        ret.dictionary = @ptrCast(&ret.mem[dictionary_start]);
 
         // init vars
         ret.latest = 0;
-        ret.here = @ptrToInt(ret.dictionary);
+        ret.here = @intFromPtr(ret.dictionary);
         ret.base = 10;
         ret.state = forth_false;
-        ret.sp = @ptrToInt(ret.stack);
-        ret.rsp = @ptrToInt(ret.rstack);
-        ret.fsp = @ptrToInt(ret.fstack);
+        ret.sp = @intFromPtr(ret.stack);
+        ret.rsp = @intFromPtr(ret.rstack);
+        ret.fsp = @intFromPtr(ret.fstack);
 
         try ret.initBuiltins();
         ret.interpretBuffer(baseLib) catch |err| switch (err) {
@@ -358,63 +358,60 @@ pub const VM = struct {
     //;
 
     pub fn pop(self: *Self) Error!Cell {
-        if (self.sp <= @ptrToInt(self.stack)) {
+        if (self.sp <= @intFromPtr(self.stack)) {
             return error.StackUnderflow;
         }
         self.sp -= @sizeOf(Cell);
-        const ret = @intToPtr(*const Cell, self.sp).*;
-        return ret;
+        return @as(*const Cell, @ptrFromInt(self.sp)).*;
     }
 
     pub fn push(self: *Self, val: Cell) Error!void {
-        if (self.sp >= @ptrToInt(self.stack) + stack_size) {
+        if (self.sp >= @intFromPtr(self.stack) + stack_size) {
             return error.StackOverflow;
         }
-        @intToPtr(*Cell, self.sp).* = val;
+        @as(*Cell, @ptrFromInt(self.sp)).* = val;
         self.sp += @sizeOf(Cell);
     }
 
     pub fn sidx(self: *Self, val: Cell) Error!Cell {
         const ptr = self.sp - (val + 1) * @sizeOf(Cell);
-        if (ptr < @ptrToInt(self.stack)) {
+        if (ptr < @intFromPtr(self.stack)) {
             return error.StackIndexOutOfRange;
         }
-        return @intToPtr(*const Cell, ptr).*;
+        return @as(*const Cell, @ptrFromInt(ptr)).*;
     }
 
     pub fn rpop(self: *Self) Error!Cell {
-        if (self.rsp <= @ptrToInt(self.rstack)) {
+        if (self.rsp <= @intFromPtr(self.rstack)) {
             return error.ReturnStackUnderflow;
         }
         self.rsp -= @sizeOf(Cell);
-        const ret = @intToPtr(*const Cell, self.rsp).*;
-        return ret;
+        return @as(*const Cell, @ptrFromInt(self.rsp)).*;
     }
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
-        if (self.rsp >= @ptrToInt(self.rstack) + rstack_size) {
+        if (self.rsp >= @intFromPtr(self.rstack) + rstack_size) {
             return error.ReturnStackOverflow;
         }
-        @intToPtr(*Cell, self.rsp).* = val;
+        @as(*Cell, @ptrFromInt(self.rsp)).* = val;
         self.rsp += @sizeOf(Cell);
     }
 
     // TODO ridx
 
     pub fn fpop(self: *Self) Error!Float {
-        if (self.fsp <= @ptrToInt(self.fstack)) {
+        if (self.fsp <= @intFromPtr(self.fstack)) {
             return error.FloatStackUnderflow;
         }
         self.fsp -= @sizeOf(Float);
-        const ret = @intToPtr(*const Float, self.fsp).*;
-        return ret;
+        return @as(*const Float, @ptrFromInt(self.fsp)).*;
     }
 
     pub fn fpush(self: *Self, val: Float) Error!void {
-        if (self.fsp >= @ptrToInt(self.fstack) + fstack_size) {
+        if (self.fsp >= @intFromPtr(self.fstack) + fstack_size) {
             return error.FloatStackOverflow;
         }
-        @intToPtr(*Float, self.fsp).* = val;
+        @as(*Float, @ptrFromInt(self.fsp)).* = val;
         self.fsp += @sizeOf(Float);
     }
 
@@ -426,7 +423,7 @@ pub const VM = struct {
     pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        return @intToPtr(*const T, addr).*;
+        return @as(*const T, @ptrFromInt(addr)).*;
     }
 
     // TODO handle masking the bits of val to fit sizeof(T)
@@ -439,12 +436,12 @@ pub const VM = struct {
     ) Error!void {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        @intToPtr(*T, addr).* = val;
+        @as(*T, @ptrFromInt(addr)).* = val;
     }
 
     pub fn sliceAt(comptime T: type, addr: Cell, len: Cell) []T {
         var str: []T = undefined;
-        str.ptr = @intToPtr([*]T, addr);
+        str.ptr = @ptrFromInt(addr);
         str.len = len;
         return str;
     }
@@ -512,7 +509,7 @@ pub const VM = struct {
     }
 
     pub fn pushString(self: *Self, str: []const u8) Error!void {
-        try self.push(@ptrToInt(str.ptr));
+        try self.push(@intFromPtr(str.ptr));
         try self.push(str.len);
     }
 
@@ -560,23 +557,23 @@ pub const VM = struct {
     }
 
     pub fn wordHeaderPrevious(addr: Cell) Cell {
-        return @intToPtr(*const Cell, addr).*;
+        return @as(*const Cell, @ptrFromInt(addr)).*;
     }
 
     pub fn wordHeaderFlags(addr: Cell) *u8 {
-        return @intToPtr(*u8, addr + @sizeOf(Cell));
+        return @ptrFromInt(addr + @sizeOf(Cell));
     }
 
     pub fn wordHeaderName(addr: Cell) []u8 {
         var name: []u8 = undefined;
-        name.ptr = @intToPtr([*]u8, addr + @sizeOf(Cell) + 2);
-        name.len = @intToPtr(*u8, addr + @sizeOf(Cell) + 1).*;
+        name.ptr = @ptrFromInt(addr + @sizeOf(Cell) + 2);
+        name.len = @as(*u8, @ptrFromInt(addr + @sizeOf(Cell) + 1)).*;
         return name;
     }
 
     pub fn wordHeaderCodeFieldAddress(addr: Cell) Cell {
         const name = wordHeaderName(addr);
-        const name_end_addr = @ptrToInt(name.ptr) + name.len;
+        const name_end_addr = @intFromPtr(name.ptr) + name.len;
         return alignAddr(Cell, name_end_addr);
     }
 
@@ -587,9 +584,9 @@ pub const VM = struct {
         func: *const Builtin,
     ) Error!void {
         try self.createWordHeader(name, flags);
-        try self.push(@enumToInt(XtType.zig));
+        try self.push(@intFromEnum(XtType.zig));
         try self.comma();
-        try self.push(@ptrToInt(func));
+        try self.push(@intFromPtr(func));
         try self.comma();
     }
 
@@ -598,8 +595,8 @@ pub const VM = struct {
     }
 
     pub fn builtinFnPtr(cfa: Cell) *const Builtin {
-        const fn_ptr = @intToPtr(*const Cell, builtinFnPtrAddress(cfa)).*;
-        return @intToPtr(*const Builtin, fn_ptr);
+        const fn_ptr = @as(*const Cell, @ptrFromInt(builtinFnPtrAddress(cfa))).*;
+        return @ptrFromInt(fn_ptr);
     }
 
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
@@ -646,7 +643,7 @@ pub const VM = struct {
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
             // TODO safety, use checkedRead and Write
-            const lookahead = @intToPtr(*XtType, curr_xt).*;
+            const lookahead = @as(*XtType, @ptrFromInt(curr_xt)).*;
             switch (lookahead) {
                 .forth => {
                     try self.rpush(self.return_to);
@@ -654,7 +651,7 @@ pub const VM = struct {
                 },
                 .zig => {
                     const zig_fn = builtinFnPtr(curr_xt);
-                    try zig_fn.*(self);
+                    try zig_fn(self);
                 },
             }
             if (self.return_to == 0) {
@@ -662,7 +659,7 @@ pub const VM = struct {
                 break;
             }
             self.return_to += @sizeOf(Cell);
-            curr_xt = @intToPtr(*Cell, self.return_to).*;
+            curr_xt = @as(*Cell, @ptrFromInt(self.return_to)).*;
         }
     }
 
@@ -739,7 +736,7 @@ pub const VM = struct {
 
     pub fn interpretBuffer(self: *Self, buf: []const u8) Error!void {
         self.source_user_input = VM.forth_false;
-        self.source_ptr = @ptrToInt(buf.ptr);
+        self.source_ptr = @intFromPtr(buf.ptr);
         self.source_len = buf.len;
         self.source_in = 0;
         try self.interpret();
@@ -789,7 +786,7 @@ pub const VM = struct {
     }
 
     pub fn forthFnId(self: *Self) Error!void {
-        try self.push(@enumToInt(XtType.forth));
+        try self.push(@intFromEnum(XtType.forth));
     }
 
     pub fn exit_(self: *Self) Error!void {
@@ -809,10 +806,10 @@ pub const VM = struct {
     pub fn executeForth(self: *Self) Error!void {
         const xt = try self.pop();
         // TODO checkedRead
-        const lookahead = @intToPtr(*XtType, xt).*;
+        const lookahead = @as(*XtType, @ptrFromInt(xt)).*;
         switch (lookahead) {
             .zig => {
-                try builtinFnPtr(xt).*(self);
+                try builtinFnPtr(xt)(self);
             },
             .forth => {
                 try self.rpush(self.return_to);
@@ -822,7 +819,7 @@ pub const VM = struct {
     }
 
     pub fn quit(self: *Self) Error!void {
-        self.rsp = @ptrToInt(self.rstack);
+        self.rsp = @intFromPtr(self.rstack);
         self.should_quit = true;
     }
 
@@ -833,7 +830,7 @@ pub const VM = struct {
     //;
 
     pub fn memStart(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.mem.ptr));
+        try self.push(@intFromPtr(self.mem.ptr));
     }
 
     pub fn memSize(self: *Self) Error!void {
@@ -841,31 +838,31 @@ pub const VM = struct {
     }
 
     pub fn dictionaryStart(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.dictionary));
+        try self.push(@intFromPtr(self.dictionary));
     }
 
     pub fn state(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.state));
+        try self.push(@intFromPtr(&self.state));
     }
 
     pub fn latest(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.latest));
+        try self.push(@intFromPtr(&self.latest));
     }
 
     pub fn here(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.here));
+        try self.push(@intFromPtr(&self.here));
     }
 
     pub fn base(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.base));
+        try self.push(@intFromPtr(&self.base));
     }
 
     pub fn s0(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.stack));
+        try self.push(@intFromPtr(self.stack));
     }
 
     pub fn sp(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.sp));
+        try self.push(@intFromPtr(&self.sp));
     }
 
     pub fn spFetch(self: *Self) Error!void {
@@ -878,19 +875,19 @@ pub const VM = struct {
     }
 
     pub fn rs0(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.rstack));
+        try self.push(@intFromPtr(self.rstack));
     }
 
     pub fn rsp(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.rsp));
+        try self.push(@intFromPtr(&self.rsp));
     }
 
     pub fn fs0(self: *Self) Error!void {
-        try self.push(@ptrToInt(self.fstack));
+        try self.push(@intFromPtr(self.fstack));
     }
 
     pub fn fsp(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.fsp));
+        try self.push(@intFromPtr(&self.fsp));
     }
 
     //;
@@ -1010,7 +1007,7 @@ pub const VM = struct {
 
     //     pub fn word(self: *Self) Error!void {
     //         const slc = try self.nextWord();
-    //         try self.push(@ptrToInt(slc.ptr));
+    //         try self.push(@intFromPtr(slc.ptr));
     //         try self.push(slc.len);
     //     }
 
@@ -1059,7 +1056,7 @@ pub const VM = struct {
     pub fn storeByte(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWrite(u8, addr, @intCast(u8, val & 0xff));
+        try self.checkedWrite(u8, addr, @as(u8, @intCast(val & 0xff)));
     }
 
     pub fn commaByte(self: *Self) Error!void {
@@ -1077,7 +1074,7 @@ pub const VM = struct {
         // TODO this is a pretty basic >number as it doest return where in the string it stopped parsing
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWrite(QuarterCell, addr, @intCast(QuarterCell, val & 0xffffffff));
+        try self.checkedWrite(QuarterCell, addr, @as(QuarterCell, @intCast(val & 0xffffffff)));
     }
 
     pub fn commaQuarter(self: *Self) Error!void {
@@ -1094,7 +1091,7 @@ pub const VM = struct {
     pub fn storeHalf(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWrite(HalfCell, addr, @intCast(HalfCell, val & 0xffffffff));
+        try self.checkedWrite(HalfCell, addr, @as(HalfCell, @intCast(val & 0xffffffff)));
     }
 
     pub fn commaHalf(self: *Self) Error!void {
@@ -1198,14 +1195,14 @@ pub const VM = struct {
     }
 
     pub fn lt(self: *Self) Error!void {
-        const a = @bitCast(SCell, try self.pop());
-        const b = @bitCast(SCell, try self.pop());
+        const a: SCell = @bitCast(try self.pop());
+        const b: SCell = @bitCast(try self.pop());
         try self.push(if (b < a) forth_true else forth_false);
     }
 
     pub fn gt(self: *Self) Error!void {
-        const a = @bitCast(SCell, try self.pop());
-        const b = @bitCast(SCell, try self.pop());
+        const a: SCell = @bitCast(try self.pop());
+        const b: SCell = @bitCast(try self.pop());
         try self.push(if (b > a) forth_true else forth_false);
     }
 
@@ -1247,13 +1244,13 @@ pub const VM = struct {
     pub fn lshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a << @intCast(u6, ct & 0x3f));
+        try self.push(a << @intCast(ct & 0x3f));
     }
 
     pub fn rshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a >> @intCast(u6, ct & 0x3f));
+        try self.push(a >> @intCast(ct & 0x3f));
     }
 
     //;
@@ -1277,12 +1274,12 @@ pub const VM = struct {
     }
 
     pub fn divMod(self: *Self) Error!void {
-        const a = @intCast(SCell, try self.pop());
-        const b = @intCast(SCell, try self.pop());
+        const a: SCell = @intCast(try self.pop());
+        const b: SCell = @intCast(try self.pop());
         const q = @divTrunc(b, a);
         const mod = @mod(b, a);
-        try self.push(@bitCast(Cell, mod));
-        try self.push(@bitCast(Cell, q));
+        try self.push(@bitCast(mod));
+        try self.push(@bitCast(q));
     }
 
     pub fn cell(self: *Self) Error!void {
@@ -1313,7 +1310,7 @@ pub const VM = struct {
         const addr = try self.pop();
         const n = try self.pop();
         // TODO use checkedWrite
-        const ptr = @intToPtr(*Cell, addr);
+        const ptr: *Cell = @ptrFromInt(addr);
         ptr.* +%= n;
     }
 
@@ -1322,7 +1319,7 @@ pub const VM = struct {
     pub fn showStack(self: *Self) Error!void {
         var stk: []Cell = undefined;
         stk.ptr = self.stack;
-        stk.len = (self.sp - @ptrToInt(self.stack)) / @sizeOf(Cell);
+        stk.len = (self.sp - @intFromPtr(self.stack)) / @sizeOf(Cell);
 
         std.debug.print("stack -- len: {}\n", .{stk.len});
 
@@ -1374,7 +1371,8 @@ pub const VM = struct {
     }
 
     pub fn emit(self: *Self) Error!void {
-        std.debug.print("{c}", .{@intCast(u8, (try self.pop()) & 0xff)});
+        // TODO do we need the @as here?
+        std.debug.print("{c}", .{@as(u8, @intCast(try self.pop() & 0xff))});
     }
 
     //;
@@ -1396,18 +1394,18 @@ pub const VM = struct {
                 },
             }
         };
-        const size_ptr = @ptrCast(*Cell, @alignCast(@alignOf(Cell), mem.ptr));
+        const size_ptr: *Cell = @ptrCast(@alignCast(mem.ptr));
         size_ptr.* = real_size;
         const data_ptr = mem.ptr + @sizeOf(Cell);
-        try self.push(@ptrToInt(data_ptr));
+        try self.push(@intFromPtr(data_ptr));
         try self.push(forth_true);
     }
 
     pub fn free_(self: *Self) Error!void {
         const addr = try self.pop();
-        const data_ptr = @intToPtr([*]u8, addr);
+        const data_ptr: [*]u8 = @ptrFromInt(addr);
         const mem_ptr = data_ptr - @sizeOf(Cell);
-        const size_ptr = @ptrCast(*Cell, @alignCast(@alignOf(Cell), mem_ptr));
+        const size_ptr: *Cell = @ptrCast(@alignCast(mem_ptr));
         var mem: []u8 = undefined;
         mem.ptr = mem_ptr;
         mem.len = size_ptr.*;
@@ -1418,9 +1416,9 @@ pub const VM = struct {
         // TODO
         const size = try self.pop();
         const addr = try self.pop();
-        const data_ptr = @intToPtr([*]u8, addr);
+        const data_ptr: [*]u8 = @ptrFromInt(addr);
         const mem_ptr = data_ptr - @sizeOf(Cell);
-        const size_ptr = @ptrCast(*Cell, @alignCast(@alignOf(Cell), mem_ptr));
+        const size_ptr: *Cell = @ptrCast(@alignCast(mem_ptr));
         var mem: []u8 = undefined;
         mem.ptr = mem_ptr;
         mem.len = size_ptr.*;
@@ -1429,8 +1427,8 @@ pub const VM = struct {
 
     pub fn cmoveUp(self: *Self) Error!void {
         const len = try self.pop();
-        const dest = @intToPtr([*]u8, try self.pop());
-        const src = @intToPtr([*]u8, try self.pop());
+        const dest: [*]u8 = @ptrFromInt(try self.pop());
+        const src: [*]u8 = @ptrFromInt(try self.pop());
         {
             @setRuntimeSafety(false);
             var i: usize = 0;
@@ -1442,8 +1440,8 @@ pub const VM = struct {
 
     pub fn cmoveDown(self: *Self) Error!void {
         const len = try self.pop();
-        const dest = @intToPtr([*]u8, try self.pop());
-        const src = @intToPtr([*]u8, try self.pop());
+        const dest: [*]u8 = @ptrFromInt(try self.pop());
+        const src: [*]u8 = @ptrFromInt(try self.pop());
         {
             @setRuntimeSafety(false);
             var i: usize = len;
@@ -1542,7 +1540,7 @@ pub const VM = struct {
         const addr = try self.pop();
         const n = try self.fpop();
         // TODO checked read/write
-        const ptr = @intToPtr(*Float, addr);
+        const ptr: *Float = @ptrFromInt(addr);
         ptr.* += n;
     }
 
@@ -1614,13 +1612,13 @@ pub const VM = struct {
 
     pub fn fToS(self: *Self) Error!void {
         const f = try self.fpop();
-        const s = @floatToInt(SCell, std.math.trunc(f));
-        try self.push(@bitCast(Cell, s));
+        const s: SCell = @intFromFloat(std.math.trunc(f));
+        try self.push(@bitCast(s));
     }
 
     pub fn sToF(self: *Self) Error!void {
-        const s = @bitCast(SCell, try self.pop());
-        try self.fpush(@intToFloat(Float, s));
+        const s: SCell = @bitCast(try self.pop());
+        try self.fpush(@floatFromInt(s));
     }
 
     pub fn flt(self: *Self) Error!void {
@@ -1638,7 +1636,7 @@ pub const VM = struct {
     pub fn fShowStack(self: *Self) Error!void {
         var stk: []Float = undefined;
         stk.ptr = self.fstack;
-        stk.len = (self.fsp - @ptrToInt(self.fstack)) / @sizeOf(Float);
+        stk.len = (self.fsp - @intFromPtr(self.fstack)) / @sizeOf(Float);
 
         std.debug.print("f<{}> ", .{stk.len});
 
@@ -1678,10 +1676,25 @@ pub const VM = struct {
         const len = try self.pop();
         const addr = try self.pop();
 
-        var flags = std.fs.File.OpenFlags{
-            .read = (permissions & file_read_flag) != 0,
-            .write = (permissions & file_write_flag) != 0,
-        };
+        const read_access =
+            (permissions & file_read_flag) != 0;
+        const write_access =
+            (permissions & file_write_flag) != 0;
+
+        var open_mode: std.fs.File.OpenMode = undefined;
+
+        if (read_access and write_access) {
+            open_mode = .read_write;
+        } else if (read_access) {
+            open_mode = .read_only;
+        } else if (write_access) {
+            open_mode = .write_only;
+        } else {
+            // TODO what to do here?, for now just set to read_only
+            open_mode = .read_only;
+        }
+
+        var flags = std.fs.File.OpenFlags{ .mode = open_mode };
 
         var f = std.fs.cwd().openFile(sliceAt(u8, addr, len), flags) catch {
             try self.push(0);
@@ -1693,13 +1706,13 @@ pub const VM = struct {
         var file = try self.allocator.create(std.fs.File);
         file.* = f;
 
-        try self.push(@ptrToInt(file));
+        try self.push(@intFromPtr(file));
         try self.push(forth_true);
     }
 
     pub fn fileClose(self: *Self) Error!void {
         const f = try self.pop();
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         ptr.close();
         self.allocator.destroy(ptr);
     }
@@ -1707,7 +1720,7 @@ pub const VM = struct {
     pub fn fileReposition(self: *Self) Error!void {
         const f = try self.pop();
         const to = try self.pop();
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         ptr.seekTo(to) catch {
             try self.push(forth_false);
             return;
@@ -1717,7 +1730,7 @@ pub const VM = struct {
 
     pub fn fileSize(self: *Self) Error!void {
         const f = try self.pop();
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         try self.push(ptr.getEndPos() catch unreachable);
     }
 
@@ -1726,7 +1739,7 @@ pub const VM = struct {
         const n = try self.pop();
         const addr = try self.pop();
 
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         var buf = sliceAt(u8, addr, n);
         // TODO handle read errors
         const ct = ptr.read(buf) catch unreachable;
@@ -1740,7 +1753,7 @@ pub const VM = struct {
         const n = try self.pop();
         const addr = try self.pop();
 
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         var reader = ptr.reader();
 
         var buf = sliceAt(u8, addr, n);
@@ -1761,7 +1774,7 @@ pub const VM = struct {
         const n = try self.pop();
         const addr = try self.pop();
 
-        var ptr = @intToPtr(*std.fs.File, f);
+        var ptr: *std.fs.File = @ptrFromInt(f);
         var writer = ptr.writer();
         var buf = sliceAt(u8, addr, n);
 
@@ -1773,19 +1786,19 @@ pub const VM = struct {
     // ===
 
     pub fn sourceUserInput(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.source_user_input));
+        try self.push(@intFromPtr(&self.source_user_input));
     }
 
     pub fn sourcePtr(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.source_ptr));
+        try self.push(@intFromPtr(&self.source_ptr));
     }
 
     pub fn sourceLen(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.source_len));
+        try self.push(@intFromPtr(&self.source_len));
     }
 
     pub fn sourceIn(self: *Self) Error!void {
-        try self.push(@ptrToInt(&self.source_in));
+        try self.push(@intFromPtr(&self.source_in));
     }
 
     fn refillReader(self: *Self, reader: anytype) Error!void {
@@ -1799,7 +1812,7 @@ pub const VM = struct {
         };
         if (line) |s| {
             self.input_buffer[s.len] = '\n';
-            self.source_ptr = @ptrToInt(self.input_buffer);
+            self.source_ptr = @intFromPtr(self.input_buffer);
             self.source_len = s.len + 1;
             self.source_in = 0;
             try self.push(forth_true);
@@ -1833,7 +1846,7 @@ pub const VM = struct {
     pub fn calcTimestamp(self: *Self) Error!void {
         const time = try self.pop();
 
-        const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(u64, time) };
+        const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(time) };
         const ed = es.getEpochDay();
 
         const yd = ed.calculateYearDay();
@@ -1858,7 +1871,7 @@ pub const VM = struct {
     pub fn now(self: *Self) Error!void {
         const time = std.time.timestamp();
         // TODO intcast here? or intCast->SCell then bitCast->Cell ?
-        try self.push(@intCast(Cell, time));
+        try self.push(@intCast(time));
     }
 
     pub fn timezone(self: *Self) Error!void {
@@ -1868,6 +1881,6 @@ pub const VM = struct {
         c.tzset();
 
         const offset = c.timezone;
-        try self.push(@intCast(Cell, offset));
+        try self.push(@intCast(offset));
     }
 };
