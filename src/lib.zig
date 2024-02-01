@@ -3,6 +3,11 @@ const Allocator = std.mem.Allocator;
 
 //;
 
+// TODO new 2024
+// reduce number of builtins
+// probably dont have half/quarter cell be in zig
+// wordlists would be nice, some type of modules
+
 // TODO
 // better error reporting
 // wordlists maybe
@@ -362,14 +367,16 @@ pub const VM = struct {
             return error.StackUnderflow;
         }
         self.sp -= @sizeOf(Cell);
-        return @as(*const Cell, @ptrFromInt(self.sp)).*;
+        const src: *const Cell = @ptrFromInt(self.sp);
+        return src.*;
     }
 
     pub fn push(self: *Self, val: Cell) Error!void {
         if (self.sp >= @intFromPtr(self.stack) + stack_size) {
             return error.StackOverflow;
         }
-        @as(*Cell, @ptrFromInt(self.sp)).* = val;
+        const dest: *Cell = @ptrFromInt(self.sp);
+        dest.* = val;
         self.sp += @sizeOf(Cell);
     }
 
@@ -378,7 +385,8 @@ pub const VM = struct {
         if (ptr < @intFromPtr(self.stack)) {
             return error.StackIndexOutOfRange;
         }
-        return @as(*const Cell, @ptrFromInt(ptr)).*;
+        const src: *const Cell = @ptrFromInt(ptr);
+        return src.*;
     }
 
     pub fn rpop(self: *Self) Error!Cell {
@@ -386,7 +394,8 @@ pub const VM = struct {
             return error.ReturnStackUnderflow;
         }
         self.rsp -= @sizeOf(Cell);
-        return @as(*const Cell, @ptrFromInt(self.rsp)).*;
+        const src: *const Cell = @ptrFromInt(self.rsp);
+        return src.*;
     }
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
@@ -423,7 +432,8 @@ pub const VM = struct {
     pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        return @as(*const T, @ptrFromInt(addr)).*;
+        const src: *const T = @ptrFromInt(addr);
+        return src.*;
     }
 
     // TODO handle masking the bits of val to fit sizeof(T)
@@ -436,7 +446,8 @@ pub const VM = struct {
     ) Error!void {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        @as(*T, @ptrFromInt(addr)).* = val;
+        const dest: *T = @ptrFromInt(addr);
+        dest.* = val;
     }
 
     pub fn sliceAt(comptime T: type, addr: Cell, len: Cell) []T {
@@ -804,9 +815,10 @@ pub const VM = struct {
     }
 
     pub fn executeForth(self: *Self) Error!void {
+        // TODO use checkedRead
         const xt = try self.pop();
-        // TODO checkedRead
-        const lookahead = @as(*XtType, @ptrFromInt(xt)).*;
+        const xtPtr: *XtType = @ptrFromInt(xt);
+        const lookahead = xtPtr.*;
         switch (lookahead) {
             .zig => {
                 try builtinFnPtr(xt)(self);
@@ -1371,7 +1383,6 @@ pub const VM = struct {
     }
 
     pub fn emit(self: *Self) Error!void {
-        // TODO do we need the @as here?
         std.debug.print("{c}", .{@as(u8, @intCast(try self.pop() & 0xff))});
     }
 
