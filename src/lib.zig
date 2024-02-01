@@ -146,6 +146,27 @@ pub const VM = struct {
 
     word_not_found: []u8,
 
+    pub fn alignedAccess(comptime T: type, addr: Cell) Error!*T {
+        if (addr % @alignOf(T) != 0) return error.AlignmentError;
+        return @ptrFromInt(addr);
+    }
+
+    //     pub fn alignedRead(comptime T: type, addr: Cell) Error!T {
+    //         if (addr % @alignOf(T) != 0) return error.AlignmentError;
+    //         const read_from: *const T = @ptrFromInt(addr);
+    //         return read_from.*;
+    //     }
+    //
+    //     pub fn alignedWrite(
+    //         comptime T: type,
+    //         addr: Cell,
+    //         val: T,
+    //     ) Error!void {
+    //         if (addr % @alignOf(T) != 0) return error.AlignmentError;
+    //         const write_to: *T = @ptrFromInt(addr);
+    //         write_to.* = val;
+    //     }
+
     pub fn init(allocator: Allocator) Error!Self {
         var ret: Self = undefined;
 
@@ -367,16 +388,16 @@ pub const VM = struct {
             return error.StackUnderflow;
         }
         self.sp -= @sizeOf(Cell);
-        const src: *const Cell = @ptrFromInt(self.sp);
-        return src.*;
+        const top: *const Cell = @ptrFromInt(self.sp);
+        return top.*;
     }
 
     pub fn push(self: *Self, val: Cell) Error!void {
         if (self.sp >= @intFromPtr(self.stack) + stack_size) {
             return error.StackOverflow;
         }
-        const dest: *Cell = @ptrFromInt(self.sp);
-        dest.* = val;
+        const top: *Cell = @ptrFromInt(self.sp);
+        top.* = val;
         self.sp += @sizeOf(Cell);
     }
 
@@ -385,8 +406,8 @@ pub const VM = struct {
         if (ptr < @intFromPtr(self.stack)) {
             return error.StackIndexOutOfRange;
         }
-        const src: *const Cell = @ptrFromInt(ptr);
-        return src.*;
+        const top: *const Cell = @ptrFromInt(ptr);
+        return top.*;
     }
 
     pub fn rpop(self: *Self) Error!Cell {
@@ -394,15 +415,16 @@ pub const VM = struct {
             return error.ReturnStackUnderflow;
         }
         self.rsp -= @sizeOf(Cell);
-        const src: *const Cell = @ptrFromInt(self.rsp);
-        return src.*;
+        const rtop: *const Cell = @ptrFromInt(self.rsp);
+        return rtop.*;
     }
 
     pub fn rpush(self: *Self, val: Cell) Error!void {
         if (self.rsp >= @intFromPtr(self.rstack) + rstack_size) {
             return error.ReturnStackOverflow;
         }
-        @as(*Cell, @ptrFromInt(self.rsp)).* = val;
+        const rtop: *Cell = @ptrFromInt(self.rsp);
+        rtop.* = val;
         self.rsp += @sizeOf(Cell);
     }
 
@@ -413,14 +435,16 @@ pub const VM = struct {
             return error.FloatStackUnderflow;
         }
         self.fsp -= @sizeOf(Float);
-        return @as(*const Float, @ptrFromInt(self.fsp)).*;
+        const ftop: *const Float = @ptrFromInt(self.fsp);
+        return ftop.*;
     }
 
     pub fn fpush(self: *Self, val: Float) Error!void {
         if (self.fsp >= @intFromPtr(self.fstack) + fstack_size) {
             return error.FloatStackOverflow;
         }
-        @as(*Float, @ptrFromInt(self.fsp)).* = val;
+        const ftop: *Float = @ptrFromInt(self.fsp);
+        ftop.* = val;
         self.fsp += @sizeOf(Float);
     }
 
@@ -432,8 +456,8 @@ pub const VM = struct {
     pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        const src: *const T = @ptrFromInt(addr);
-        return src.*;
+        const read_from: *const T = @ptrFromInt(addr);
+        return read_from.*;
     }
 
     // TODO handle masking the bits of val to fit sizeof(T)
@@ -446,8 +470,8 @@ pub const VM = struct {
     ) Error!void {
         _ = self;
         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        const dest: *T = @ptrFromInt(addr);
-        dest.* = val;
+        const write_to: *T = @ptrFromInt(addr);
+        write_to.* = val;
     }
 
     pub fn sliceAt(comptime T: type, addr: Cell, len: Cell) []T {
@@ -568,7 +592,8 @@ pub const VM = struct {
     }
 
     pub fn wordHeaderPrevious(addr: Cell) Cell {
-        return @as(*const Cell, @ptrFromInt(addr)).*;
+        const previous_ptr: *const Cell = @ptrFromInt(addr);
+        return previous_ptr.*;
     }
 
     pub fn wordHeaderFlags(addr: Cell) *u8 {
@@ -578,7 +603,8 @@ pub const VM = struct {
     pub fn wordHeaderName(addr: Cell) []u8 {
         var name: []u8 = undefined;
         name.ptr = @ptrFromInt(addr + @sizeOf(Cell) + 2);
-        name.len = @as(*u8, @ptrFromInt(addr + @sizeOf(Cell) + 1)).*;
+        const name_len_ptr: *u8 = @ptrFromInt(addr + @sizeOf(Cell) + 1);
+        name.len = name_len_ptr.*;
         return name;
     }
 
@@ -653,9 +679,9 @@ pub const VM = struct {
         self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
-            // TODO safety, use checkedRead and Write
-            const lookahead = @as(*XtType, @ptrFromInt(curr_xt)).*;
-            switch (lookahead) {
+            const xt_type_ptr: *const XtType = @ptrFromInt(curr_xt);
+            const xt_type = xt_type_ptr.*;
+            switch (xt_type) {
                 .forth => {
                     try self.rpush(self.return_to);
                     self.return_to = curr_xt;
@@ -740,7 +766,7 @@ pub const VM = struct {
         if (self.source_in >= self.source_len) {
             return error.EndOfInput;
         }
-        const ch = self.checkedRead(u8, self.source_ptr + self.source_in);
+        const ch = (try alignedAccess(u8, self.source_ptr + self.source_in)).*;
         self.source_in += 1;
         return ch;
     }
@@ -817,9 +843,9 @@ pub const VM = struct {
     pub fn executeForth(self: *Self) Error!void {
         // TODO use checkedRead
         const xt = try self.pop();
-        const xtPtr: *XtType = @ptrFromInt(xt);
-        const lookahead = xtPtr.*;
-        switch (lookahead) {
+        const xt_type_ptr: *XtType = @ptrFromInt(xt);
+        const xt_type = xt_type_ptr.*;
+        switch (xt_type) {
             .zig => {
                 try builtinFnPtr(xt)(self);
             },
