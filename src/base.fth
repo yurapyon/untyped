@@ -32,7 +32,6 @@ latest @ make-immediate
 
 : chars ;
 : cells cell * ;
-: halfs half * ;
 : floats float * ;
 
 : 0= 0 = ;

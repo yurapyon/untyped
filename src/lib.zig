@@ -39,6 +39,9 @@ const Allocator = std.mem.Allocator;
 
 // state == forth_true in compilation state
 
+// alignedAccess should be used anywhere the address of an access can be influenced from forth itself
+//   which is pretty much everywhere
+
 pub const VM = struct {
     const Self = @This();
 
@@ -48,14 +51,6 @@ pub const VM = struct {
         StackUnderflow,
         StackOverflow,
         StackIndexOutOfRange,
-
-        ReturnStackUnderflow,
-        ReturnStackOverflow,
-        ReturnStackIndexOutOfRange,
-
-        FloatStackUnderflow,
-        FloatStackOverflow,
-        FloatStackIndexOutOfRange,
 
         WordTooLong,
         WordNotFound,
@@ -74,8 +69,8 @@ pub const VM = struct {
     // TODO comptime make sure cell is u64
     pub const Cell = usize;
     pub const SCell = isize;
-    pub const QuarterCell = u16;
-    pub const HalfCell = u32;
+    // pub const QuarterCell = u16;
+    // pub const HalfCell = u32;
     pub const Builtin = fn (self: *Self) Error!void;
     pub const Float = f32;
 
@@ -113,6 +108,154 @@ pub const VM = struct {
         forth,
     };
 
+    pub fn alignedAccess(comptime T: type, addr: Cell) !*T {
+        if (addr % @alignOf(T) != 0) return error.AlignmentError;
+        return @ptrFromInt(addr);
+    }
+
+    pub fn Stack(comptime T: type, comptime size: usize) type {
+        return struct {
+            const StackSelf = @This();
+
+            stack: [*]T,
+            top: Cell,
+
+            pub fn init(self: *StackSelf, ptr: [*]T) void {
+                self.stack = ptr;
+                self.top = @intFromPtr(ptr);
+            }
+
+            pub fn clear(self: *StackSelf) void {
+                self.top = @intFromPtr(self.stack);
+            }
+
+            pub fn depth(self: *StackSelf) usize {
+                return (self.top - @intFromPtr(self.stack)) / @sizeOf(T);
+            }
+
+            pub fn toSlice(self: *StackSelf) []T {
+                var ret: []T = undefined;
+                ret.ptr = self.stack;
+                ret.len = self.depth();
+                return ret;
+            }
+
+            pub fn pop(self: *StackSelf) Error!T {
+                if (self.top <= @intFromPtr(self.stack)) {
+                    return error.StackUnderflow;
+                }
+                self.top -= @sizeOf(T);
+                const ptr = try alignedAccess(T, self.top);
+                return ptr.*;
+            }
+
+            pub fn push(self: *StackSelf, val: T) Error!void {
+                if (self.top >= @intFromPtr(self.stack) + size) {
+                    return error.StackOverflow;
+                }
+                const ptr = try alignedAccess(T, self.top);
+                ptr.* = val;
+                self.top += @sizeOf(T);
+            }
+
+            pub fn index(self: *const StackSelf, idx: Cell) Error!T {
+                const addr = self.top - (idx + 1) * @sizeOf(T);
+                if (addr < @intFromPtr(self.stack)) {
+                    return error.StackIndexOutOfRange;
+                }
+                const ptr = try alignedAccess(T, addr);
+                return ptr.*;
+            }
+
+            // Forth words
+
+            pub fn s0(self: *StackSelf) Cell {
+                return @intFromPtr(self.stack);
+            }
+
+            pub fn sp(self: *StackSelf) Cell {
+                return @intFromPtr(&self.top);
+            }
+
+            pub fn dup(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                try self.push(a);
+                try self.push(a);
+            }
+
+            pub fn drop(self: *StackSelf) Error!void {
+                _ = try self.pop();
+            }
+
+            pub fn swap(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                try self.push(a);
+                try self.push(b);
+            }
+
+            pub fn over(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                try self.push(b);
+                try self.push(a);
+                try self.push(b);
+            }
+
+            pub fn tuck(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                try self.push(a);
+                try self.push(b);
+                try self.push(a);
+            }
+
+            pub fn nip(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                _ = try self.pop();
+                try self.push(a);
+            }
+
+            // c b a > b a c
+            pub fn rot(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                const c = try self.pop();
+                try self.push(b);
+                try self.push(a);
+                try self.push(c);
+            }
+
+            // c b a > a c b
+            pub fn nrot(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                const c = try self.pop();
+                try self.push(a);
+                try self.push(c);
+                try self.push(b);
+            }
+
+            pub fn pick(self: *StackSelf, at: Cell) Error!void {
+                const tos = self.top;
+                const offset = (1 + at) * @sizeOf(T);
+                const value = @as(*T, @ptrFromInt(tos - offset)).*;
+                try self.push(value);
+            }
+
+            pub fn swap2(self: *StackSelf) Error!void {
+                const a = try self.pop();
+                const b = try self.pop();
+                const c = try self.pop();
+                const d = try self.pop();
+                try self.push(b);
+                try self.push(a);
+                try self.push(d);
+                try self.push(c);
+            }
+        };
+    }
+
     allocator: Allocator,
 
     // execution
@@ -130,42 +273,19 @@ pub const VM = struct {
     base: Cell,
     state: Cell,
     sp: Cell,
-    rsp: Cell,
-    fsp: Cell,
 
     source_user_input: Cell,
     source_ptr: Cell,
     source_len: Cell,
     source_in: Cell,
 
-    stack: [*]Cell,
-    rstack: [*]Cell,
-    fstack: [*]Float,
+    stack: Stack(Cell, stack_size),
+    rstack: Stack(Cell, rstack_size),
+    fstack: Stack(Float, fstack_size),
     input_buffer: [*]u8,
     dictionary: [*]u8,
 
     word_not_found: []u8,
-
-    pub fn alignedAccess(comptime T: type, addr: Cell) Error!*T {
-        if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        return @ptrFromInt(addr);
-    }
-
-    //     pub fn alignedRead(comptime T: type, addr: Cell) Error!T {
-    //         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-    //         const read_from: *const T = @ptrFromInt(addr);
-    //         return read_from.*;
-    //     }
-    //
-    //     pub fn alignedWrite(
-    //         comptime T: type,
-    //         addr: Cell,
-    //         val: T,
-    //     ) Error!void {
-    //         if (addr % @alignOf(T) != 0) return error.AlignmentError;
-    //         const write_to: *T = @ptrFromInt(addr);
-    //         write_to.* = val;
-    //     }
 
     pub fn init(allocator: Allocator) Error!Self {
         var ret: Self = undefined;
@@ -174,9 +294,9 @@ pub const VM = struct {
         ret.return_to = 0;
 
         ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(Cell), null);
-        ret.stack = @ptrCast(@alignCast(&ret.mem[stack_start]));
-        ret.rstack = @ptrCast(@alignCast(&ret.mem[rstack_start]));
-        ret.fstack = @ptrCast(@alignCast(&ret.mem[fstack_start]));
+        ret.stack.init(@ptrCast(@alignCast(&ret.mem[stack_start])));
+        ret.rstack.init(@ptrCast(@alignCast(&ret.mem[rstack_start])));
+        ret.fstack.init(@ptrCast(@alignCast(&ret.mem[fstack_start])));
         ret.input_buffer = @ptrCast(&ret.mem[input_buffer_start]);
         ret.dictionary = @ptrCast(&ret.mem[dictionary_start]);
 
@@ -185,9 +305,6 @@ pub const VM = struct {
         ret.here = @intFromPtr(ret.dictionary);
         ret.base = 10;
         ret.state = forth_false;
-        ret.sp = @intFromPtr(ret.stack);
-        ret.rsp = @intFromPtr(ret.rstack);
-        ret.fsp = @intFromPtr(ret.fstack);
 
         try ret.initBuiltins();
         ret.interpretBuffer(baseLib) catch |err| switch (err) {
@@ -261,12 +378,12 @@ pub const VM = struct {
         try self.createBuiltin("c@", 0, &fetchByte);
         try self.createBuiltin("c!", 0, &storeByte);
         try self.createBuiltin("c,", 0, &commaByte);
-        try self.createBuiltin("q@", 0, &fetchQuarter);
-        try self.createBuiltin("q!", 0, &storeQuarter);
-        try self.createBuiltin("q,", 0, &commaQuarter);
-        try self.createBuiltin("h@", 0, &fetchHalf);
-        try self.createBuiltin("h!", 0, &storeHalf);
-        try self.createBuiltin("h,", 0, &commaHalf);
+        //         try self.createBuiltin("q@", 0, &fetchQuarter);
+        //         try self.createBuiltin("q!", 0, &storeQuarter);
+        //         try self.createBuiltin("q,", 0, &commaQuarter);
+        //         try self.createBuiltin("h@", 0, &fetchHalf);
+        //         try self.createBuiltin("h!", 0, &storeHalf);
+        //         try self.createBuiltin("h,", 0, &commaHalf);
         try self.createBuiltin("'", 0, &tick);
         try self.createBuiltin("[']", word_immediate_flag, &bracketTick);
         try self.createBuiltin("[", word_immediate_flag, &lBracket);
@@ -303,7 +420,7 @@ pub const VM = struct {
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
-        try self.createBuiltin("half", 0, &half);
+        // try self.createBuiltin("half", 0, &half);
         try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
 
@@ -339,8 +456,8 @@ pub const VM = struct {
         try self.createBuiltin("f,", 0, &fComma);
         try self.createBuiltin("f+!", 0, &fPlusStore);
         try self.createBuiltin(">float", 0, &fParse);
-        try self.createBuiltin("fdrop", 0, &fDrop);
         try self.createBuiltin("fdup", 0, &fDup);
+        try self.createBuiltin("fdrop", 0, &fDrop);
         try self.createBuiltin("fswap", 0, &fSwap);
         try self.createBuiltin("fover", 0, &fOver);
         try self.createBuiltin("frot", 0, &fRot);
@@ -384,71 +501,12 @@ pub const VM = struct {
     //;
 
     pub fn pop(self: *Self) Error!Cell {
-        if (self.sp <= @intFromPtr(self.stack)) {
-            return error.StackUnderflow;
-        }
-        self.sp -= @sizeOf(Cell);
-        const top: *const Cell = @ptrFromInt(self.sp);
-        return top.*;
+        return try self.stack.pop();
     }
 
     pub fn push(self: *Self, val: Cell) Error!void {
-        if (self.sp >= @intFromPtr(self.stack) + stack_size) {
-            return error.StackOverflow;
-        }
-        const top: *Cell = @ptrFromInt(self.sp);
-        top.* = val;
-        self.sp += @sizeOf(Cell);
+        try self.stack.push(val);
     }
-
-    pub fn sidx(self: *Self, val: Cell) Error!Cell {
-        const ptr = self.sp - (val + 1) * @sizeOf(Cell);
-        if (ptr < @intFromPtr(self.stack)) {
-            return error.StackIndexOutOfRange;
-        }
-        const top: *const Cell = @ptrFromInt(ptr);
-        return top.*;
-    }
-
-    pub fn rpop(self: *Self) Error!Cell {
-        if (self.rsp <= @intFromPtr(self.rstack)) {
-            return error.ReturnStackUnderflow;
-        }
-        self.rsp -= @sizeOf(Cell);
-        const rtop: *const Cell = @ptrFromInt(self.rsp);
-        return rtop.*;
-    }
-
-    pub fn rpush(self: *Self, val: Cell) Error!void {
-        if (self.rsp >= @intFromPtr(self.rstack) + rstack_size) {
-            return error.ReturnStackOverflow;
-        }
-        const rtop: *Cell = @ptrFromInt(self.rsp);
-        rtop.* = val;
-        self.rsp += @sizeOf(Cell);
-    }
-
-    // TODO ridx
-
-    pub fn fpop(self: *Self) Error!Float {
-        if (self.fsp <= @intFromPtr(self.fstack)) {
-            return error.FloatStackUnderflow;
-        }
-        self.fsp -= @sizeOf(Float);
-        const ftop: *const Float = @ptrFromInt(self.fsp);
-        return ftop.*;
-    }
-
-    pub fn fpush(self: *Self, val: Float) Error!void {
-        if (self.fsp >= @intFromPtr(self.fstack) + fstack_size) {
-            return error.FloatStackOverflow;
-        }
-        const ftop: *Float = @ptrFromInt(self.fsp);
-        ftop.* = val;
-        self.fsp += @sizeOf(Float);
-    }
-
-    // TODO fidx
 
     //;
 
@@ -683,7 +741,7 @@ pub const VM = struct {
             const xt_type = xt_type_ptr.*;
             switch (xt_type) {
                 .forth => {
-                    try self.rpush(self.return_to);
+                    try self.rstack.push(self.return_to);
                     self.return_to = curr_xt;
                 },
                 .zig => {
@@ -705,8 +763,8 @@ pub const VM = struct {
         var out_of_input = false;
         while (!self.should_bye and !out_of_input) {
             try self.word();
-            const word_len = try self.sidx(0);
-            const word_addr = try self.sidx(1);
+            const word_len = try self.stack.index(0);
+            const word_addr = try self.stack.index(1);
             if (word_len == 0) {
                 _ = try self.pop();
                 _ = try self.pop();
@@ -748,11 +806,11 @@ pub const VM = struct {
                     if (is_compiling) {
                         try self.push(self.litFloat_address);
                         try self.comma();
-                        try self.fpush(fl);
+                        try self.fstack.push(fl);
                         try self.fComma();
                         self.here = alignAddr(Cell, self.here);
                     } else {
-                        try self.fpush(fl);
+                        try self.fstack.push(fl);
                     }
                 } else {
                     self.word_not_found = str;
@@ -827,37 +885,37 @@ pub const VM = struct {
     }
 
     pub fn exit_(self: *Self) Error!void {
-        self.return_to = try self.rpop();
+        self.return_to = try self.rstack.pop();
     }
 
     pub fn lit(self: *Self) Error!void {
-        try self.push(try self.checkedRead(Cell, self.return_to + @sizeOf(Cell)));
+        const data = (try alignedAccess(Cell, self.return_to + @sizeOf(Cell))).*;
+        try self.push(data);
         self.return_to += @sizeOf(Cell);
     }
 
     pub fn litFloat(self: *Self) Error!void {
-        try self.fpush(try self.checkedRead(Float, self.return_to + @sizeOf(Cell)));
+        const data = (try alignedAccess(Float, self.return_to + @sizeOf(Cell))).*;
+        try self.fstack.push(data);
         self.return_to += @sizeOf(Cell);
     }
 
     pub fn executeForth(self: *Self) Error!void {
-        // TODO use checkedRead
-        const xt = try self.pop();
-        const xt_type_ptr: *XtType = @ptrFromInt(xt);
-        const xt_type = xt_type_ptr.*;
+        const xt_addr = try self.pop();
+        const xt_type = (try alignedAccess(XtType, xt_addr)).*;
         switch (xt_type) {
             .zig => {
-                try builtinFnPtr(xt)(self);
+                try builtinFnPtr(xt_addr)(self);
             },
             .forth => {
-                try self.rpush(self.return_to);
-                self.return_to = xt;
+                try self.rstack.push(self.return_to);
+                self.return_to = xt_addr;
             },
         }
     }
 
     pub fn quit(self: *Self) Error!void {
-        self.rsp = @intFromPtr(self.rstack);
+        self.rstack.clear();
         self.should_quit = true;
     }
 
@@ -896,137 +954,100 @@ pub const VM = struct {
     }
 
     pub fn s0(self: *Self) Error!void {
-        try self.push(@intFromPtr(self.stack));
+        try self.push(self.stack.s0());
     }
 
     pub fn sp(self: *Self) Error!void {
-        try self.push(@intFromPtr(&self.sp));
+        try self.push(self.stack.sp());
     }
 
     pub fn spFetch(self: *Self) Error!void {
-        try self.push(self.sp);
+        try self.push(self.stack.top);
     }
 
     pub fn spStore(self: *Self) Error!void {
         const val = try self.pop();
-        self.sp = val;
+        self.stack.top = val;
     }
 
     pub fn rs0(self: *Self) Error!void {
-        try self.push(@intFromPtr(self.rstack));
+        try self.push(self.rstack.s0());
     }
 
     pub fn rsp(self: *Self) Error!void {
-        try self.push(@intFromPtr(&self.rsp));
+        try self.push(self.rstack.sp());
     }
 
     pub fn fs0(self: *Self) Error!void {
-        try self.push(@intFromPtr(self.fstack));
+        try self.push(self.fstack.s0());
     }
 
     pub fn fsp(self: *Self) Error!void {
-        try self.push(@intFromPtr(&self.fsp));
+        try self.push(self.fstack.sp());
     }
 
     //;
 
     pub fn dup(self: *Self) Error!void {
-        const a = try self.pop();
-        try self.push(a);
-        try self.push(a);
+        try self.stack.dup();
     }
 
     pub fn dupMaybe(self: *Self) Error!void {
-        const a = try self.pop();
-        try self.push(a);
+        const a = try self.stack.index(0);
         if (a != forth_false) {
             try self.push(a);
         }
     }
 
     pub fn drop(self: *Self) Error!void {
-        _ = try self.pop();
+        try self.stack.drop();
     }
 
     pub fn swap(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        try self.push(a);
-        try self.push(b);
+        try self.stack.swap();
     }
 
     pub fn over(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        try self.push(b);
-        try self.push(a);
-        try self.push(b);
+        try self.stack.over();
     }
 
     pub fn tuck(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        try self.push(a);
-        try self.push(b);
-        try self.push(a);
+        try self.stack.tuck();
     }
 
     pub fn nip(self: *Self) Error!void {
-        const a = try self.pop();
-        _ = try self.pop();
-        try self.push(a);
+        try self.stack.nip();
     }
 
-    // c b a > b a c
     pub fn rot(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        const c = try self.pop();
-        try self.push(b);
-        try self.push(a);
-        try self.push(c);
+        try self.stack.rot();
     }
 
-    // c b a > a c b
     pub fn nrot(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        const c = try self.pop();
-        try self.push(a);
-        try self.push(c);
-        try self.push(b);
+        try self.stack.nrot();
     }
 
     pub fn pick(self: *Self) Error!void {
         const at = try self.pop();
-        const tos = self.sp;
-        const offset = (1 + at) * @sizeOf(Cell);
-        try self.push(try self.checkedRead(Cell, tos - offset));
+        try self.stack.pick(at);
     }
 
     pub fn swap2(self: *Self) Error!void {
-        const a = try self.pop();
-        const b = try self.pop();
-        const c = try self.pop();
-        const d = try self.pop();
-        try self.push(b);
-        try self.push(a);
-        try self.push(d);
-        try self.push(c);
+        try self.stack.swap2();
     }
 
     //;
 
     pub fn toR(self: *Self) Error!void {
-        try self.rpush(try self.pop());
+        try self.rstack.push(try self.pop());
     }
 
     pub fn fromR(self: *Self) Error!void {
-        try self.push(try self.rpop());
+        try self.push(try self.rstack.pop());
     }
 
     pub fn rFetch(self: *Self) Error!void {
-        try self.push(try self.checkedRead(Cell, self.rsp - @sizeOf(Cell)));
+        try self.push(try self.rstack.index(0));
     }
 
     //;
@@ -1071,13 +1092,14 @@ pub const VM = struct {
 
     pub fn fetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.push(try self.checkedRead(Cell, addr));
+        const value = (try alignedAccess(Cell, addr)).*;
+        try self.push(value);
     }
 
     pub fn store(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWrite(Cell, addr, val);
+        (try alignedAccess(Cell, addr)).* = val;
     }
 
     pub fn comma(self: *Self) Error!void {
@@ -1088,13 +1110,15 @@ pub const VM = struct {
 
     pub fn fetchByte(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.push(try self.checkedRead(u8, addr));
+        const byte = (try alignedAccess(u8, addr)).*;
+        try self.push(byte);
     }
 
     pub fn storeByte(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        try self.checkedWrite(u8, addr, @as(u8, @intCast(val & 0xff)));
+        const byte: u8 = @intCast(val & 0xff);
+        (try alignedAccess(u8, addr)).* = byte;
     }
 
     pub fn commaByte(self: *Self) Error!void {
@@ -1103,45 +1127,10 @@ pub const VM = struct {
         self.here += 1;
     }
 
-    pub fn fetchQuarter(self: *Self) Error!void {
-        const addr = try self.pop();
-        try self.push(try self.checkedRead(QuarterCell, addr));
-    }
-
-    pub fn storeQuarter(self: *Self) Error!void {
-        // TODO this is a pretty basic >number as it doest return where in the string it stopped parsing
-        const addr = try self.pop();
-        const val = try self.pop();
-        try self.checkedWrite(QuarterCell, addr, @as(QuarterCell, @intCast(val & 0xffffffff)));
-    }
-
-    pub fn commaQuarter(self: *Self) Error!void {
-        try self.push(self.here);
-        try self.storeQuarter();
-        self.here += @sizeOf(QuarterCell);
-    }
-
-    pub fn fetchHalf(self: *Self) Error!void {
-        const addr = try self.pop();
-        try self.push(try self.checkedRead(HalfCell, addr));
-    }
-
-    pub fn storeHalf(self: *Self) Error!void {
-        const addr = try self.pop();
-        const val = try self.pop();
-        try self.checkedWrite(HalfCell, addr, @as(HalfCell, @intCast(val & 0xffffffff)));
-    }
-
-    pub fn commaHalf(self: *Self) Error!void {
-        try self.push(self.here);
-        try self.storeHalf();
-        self.here += @sizeOf(HalfCell);
-    }
-
     pub fn tick(self: *Self) Error!void {
         try self.word();
-        const word_len = try self.sidx(0);
-        const word_addr = try self.sidx(1);
+        const word_len = try self.stack.index(0);
+        const word_addr = try self.stack.index(1);
         _ = word_len;
         _ = word_addr;
 
@@ -1191,7 +1180,8 @@ pub const VM = struct {
     }
 
     pub fn branch(self: *Self) Error!void {
-        self.return_to +%= try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
+        const jump_ct = @as(*Cell, @ptrFromInt(self.return_to + @sizeOf(Cell))).*;
+        self.return_to +%= jump_ct;
     }
 
     pub fn zbranch(self: *Self) Error!void {
@@ -1204,7 +1194,8 @@ pub const VM = struct {
 
     // TODO note jump only works with forth words not builtins
     pub fn jump(self: *Self) Error!void {
-        self.return_to = try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
+        const jump_addr = @as(*Cell, @ptrFromInt(self.return_to + @sizeOf(Cell))).*;
+        self.return_to = jump_addr;
         self.return_to -= @sizeOf(Cell);
     }
 
@@ -1324,9 +1315,9 @@ pub const VM = struct {
         try self.push(@sizeOf(Cell));
     }
 
-    pub fn half(self: *Self) Error!void {
-        try self.push(@sizeOf(HalfCell));
-    }
+    //     pub fn half(self: *Self) Error!void {
+    //         try self.push(@sizeOf(HalfCell));
+    //     }
 
     // TODO this is a pretty basic >number as it doest return where in the string it stopped parsing
     pub fn parseNumberForth(self: *Self) Error!void {
@@ -1355,11 +1346,9 @@ pub const VM = struct {
     //;
 
     pub fn showStack(self: *Self) Error!void {
-        var stk: []Cell = undefined;
-        stk.ptr = self.stack;
-        stk.len = (self.sp - @intFromPtr(self.stack)) / @sizeOf(Cell);
+        const stk = self.stack.toSlice();
 
-        std.debug.print("stack -- len: {}\n", .{stk.len});
+        std.debug.print("stack depth: {} ", .{stk.len});
 
         var i: usize = 0;
         while (i < stk.len) : (i += 1) {
@@ -1511,7 +1500,7 @@ pub const VM = struct {
     // ===
 
     pub fn fPrint(self: *Self) Error!void {
-        const float = try self.fpop();
+        const float = try self.fstack.pop();
         std.debug.print("{d} ", .{float});
     }
 
@@ -1520,50 +1509,50 @@ pub const VM = struct {
     }
 
     pub fn fPlus(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(b + a);
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
+        try self.fstack.push(b + a);
     }
 
     pub fn fMinus(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(b - a);
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
+        try self.fstack.push(b - a);
     }
 
     pub fn fTimes(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(b * a);
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
+        try self.fstack.push(b * a);
     }
 
     pub fn fDivide(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(b / a);
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
+        try self.fstack.push(b / a);
     }
 
     pub fn fSin(self: *Self) Error!void {
-        const val = try self.fpop();
-        try self.fpush(std.math.sin(val));
+        const val = try self.fstack.pop();
+        try self.fstack.push(std.math.sin(val));
     }
 
     pub fn pi(self: *Self) Error!void {
-        try self.fpush(std.math.pi);
+        try self.fstack.push(std.math.pi);
     }
 
     pub fn tau(self: *Self) Error!void {
-        try self.fpush(std.math.tau);
+        try self.fstack.push(std.math.tau);
     }
 
     pub fn fFetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.fpush(try self.checkedRead(Float, addr));
+        try self.fstack.push(try self.checkedRead(Float, addr));
     }
 
     pub fn fStore(self: *Self) Error!void {
         const addr = try self.pop();
-        const val = try self.fpop();
+        const val = try self.fstack.pop();
         try self.checkedWrite(Float, addr, val);
     }
 
@@ -1575,7 +1564,7 @@ pub const VM = struct {
 
     pub fn fPlusStore(self: *Self) Error!void {
         const addr = try self.pop();
-        const n = try self.fpop();
+        const n = try self.fstack.pop();
         // TODO checked read/write
         const ptr: *Float = @ptrFromInt(addr);
         ptr.* += n;
@@ -1587,111 +1576,87 @@ pub const VM = struct {
         const str = sliceAt(u8, addr, len);
         const fl = parseFloat(str) catch |err| switch (err) {
             error.InvalidFloat => {
-                try self.fpush(0);
+                try self.fstack.push(0);
                 try self.push(forth_false);
                 return;
             },
             else => return err,
         };
-        try self.fpush(fl);
+        try self.fstack.push(fl);
         try self.push(forth_true);
     }
 
-    pub fn fDrop(self: *Self) Error!void {
-        _ = try self.fpop();
+    pub fn fDup(self: *Self) Error!void {
+        try self.fstack.dup();
     }
 
-    pub fn fDup(self: *Self) Error!void {
-        const f = try self.fpop();
-        try self.fpush(f);
-        try self.fpush(f);
+    pub fn fDrop(self: *Self) Error!void {
+        try self.fstack.drop();
     }
 
     pub fn fSwap(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(a);
-        try self.fpush(b);
+        try self.fstack.swap();
     }
 
     pub fn fOver(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        try self.fpush(b);
-        try self.fpush(a);
-        try self.fpush(b);
+        try self.fstack.over();
     }
 
     pub fn fRot(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        const c = try self.fpop();
-        try self.fpush(b);
-        try self.fpush(a);
-        try self.fpush(c);
+        try self.fstack.rot();
     }
 
     pub fn fNRot(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
-        const c = try self.fpop();
-        try self.fpush(a);
-        try self.fpush(c);
-        try self.fpush(b);
+        try self.fstack.nrot();
     }
 
     pub fn fPick(self: *Self) Error!void {
         const at = try self.pop();
-        const tos = self.fsp;
-        const offset = (1 + at) * @sizeOf(Float);
-        try self.fpush(try self.checkedRead(Float, tos - offset));
+        try self.fstack.pick(at);
     }
 
     pub fn fToS(self: *Self) Error!void {
-        const f = try self.fpop();
+        const f = try self.fstack.pop();
         const s: SCell = @intFromFloat(std.math.trunc(f));
         try self.push(@bitCast(s));
     }
 
     pub fn sToF(self: *Self) Error!void {
         const s: SCell = @bitCast(try self.pop());
-        try self.fpush(@floatFromInt(s));
+        try self.fstack.push(@floatFromInt(s));
     }
 
     pub fn flt(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
         try self.push(if (b < a) forth_true else forth_false);
     }
 
     pub fn fgt(self: *Self) Error!void {
-        const a = try self.fpop();
-        const b = try self.fpop();
+        const a = try self.fstack.pop();
+        const b = try self.fstack.pop();
         try self.push(if (b > a) forth_true else forth_false);
     }
 
     pub fn fShowStack(self: *Self) Error!void {
-        var stk: []Float = undefined;
-        stk.ptr = self.fstack;
-        stk.len = (self.fsp - @intFromPtr(self.fstack)) / @sizeOf(Float);
+        const stk = self.fstack.toSlice();
 
         std.debug.print("f<{}> ", .{stk.len});
 
-        var i: usize = 0;
-        while (i < stk.len) : (i += 1) {
-            std.debug.print("{d} ", .{stk[i]});
+        for (stk) |item| {
+            std.debug.print("{d} ", .{item});
         }
     }
 
     pub fn fFloor(self: *Self) Error!void {
-        const f = try self.fpop();
-        try self.fpush(std.math.floor(f));
+        const f = try self.fstack.pop();
+        try self.fstack.push(std.math.floor(f));
     }
 
     pub fn fPow(self: *Self) Error!void {
-        const exp = try self.fpop();
-        const f = try self.fpop();
-        try self.fpush(std.math.pow(Float, f, exp));
+        const exp = try self.fstack.pop();
+        const f = try self.fstack.pop();
+        try self.fstack.push(std.math.pow(Float, f, exp));
     }
 
     // ===
