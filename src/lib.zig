@@ -69,8 +69,6 @@ pub const VM = struct {
     // TODO comptime make sure cell is u64
     pub const Cell = usize;
     pub const SCell = isize;
-    // pub const QuarterCell = u16;
-    // pub const HalfCell = u32;
     pub const Builtin = fn (self: *Self) Error!void;
     pub const Float = f32;
 
@@ -236,7 +234,7 @@ pub const VM = struct {
                 try self.push(b);
             }
 
-            pub fn pick(self: *StackSelf, at: Cell) Error!void {
+            pub fn pick(self: *StackSelf, at: usize) Error!void {
                 const tos = self.top;
                 const offset = (1 + at) * @sizeOf(T);
                 const value = @as(*T, @ptrFromInt(tos - offset)).*;
@@ -255,6 +253,10 @@ pub const VM = struct {
             }
         };
     }
+
+    const DStack = Stack(Cell, stack_size);
+    const RStack = Stack(Cell, rstack_size);
+    const FStack = Stack(Float, fstack_size);
 
     allocator: Allocator,
 
@@ -279,9 +281,9 @@ pub const VM = struct {
     source_len: Cell,
     source_in: Cell,
 
-    stack: Stack(Cell, stack_size),
-    rstack: Stack(Cell, rstack_size),
-    fstack: Stack(Float, fstack_size),
+    stack: DStack,
+    rstack: RStack,
+    fstack: FStack,
     input_buffer: [*]u8,
     dictionary: [*]u8,
 
@@ -293,7 +295,7 @@ pub const VM = struct {
         ret.allocator = allocator;
         ret.return_to = 0;
 
-        ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(Cell), null);
+        ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(WordHeader), null);
         ret.stack.init(@ptrCast(@alignCast(&ret.mem[stack_start])));
         ret.rstack.init(@ptrCast(@alignCast(&ret.mem[rstack_start])));
         ret.fstack.init(@ptrCast(@alignCast(&ret.mem[fstack_start])));
@@ -328,12 +330,21 @@ pub const VM = struct {
         try self.createBuiltin("forth-fn-id", 0, &forthFnId);
         try self.createBuiltin("exit", 0, &exit_);
         try self.createBuiltin("lit", 0, &lit);
-        self.lit_address = wordHeaderCodeFieldAddress(self.latest);
+        {
+            const header: *const WordHeader = @ptrFromInt(self.latest);
+            self.lit_address = header.getCfa();
+        }
         try self.createBuiltin("litfloat", 0, &litFloat);
-        self.litFloat_address = wordHeaderCodeFieldAddress(self.latest);
+        {
+            const header: *const WordHeader = @ptrFromInt(self.latest);
+            self.litFloat_address = header.getCfa();
+        }
         try self.createBuiltin("execute", 0, &executeForth);
         try self.createBuiltin("quit", 0, &quit);
-        self.quit_address = wordHeaderCodeFieldAddress(self.latest);
+        {
+            const header: *const WordHeader = @ptrFromInt(self.latest);
+            self.quit_address = header.getCfa();
+        }
         try self.createBuiltin("bye", 0, &bye);
 
         try self.createBuiltin("mem", 0, &memStart);
@@ -378,12 +389,6 @@ pub const VM = struct {
         try self.createBuiltin("c@", 0, &fetchByte);
         try self.createBuiltin("c!", 0, &storeByte);
         try self.createBuiltin("c,", 0, &commaByte);
-        //         try self.createBuiltin("q@", 0, &fetchQuarter);
-        //         try self.createBuiltin("q!", 0, &storeQuarter);
-        //         try self.createBuiltin("q,", 0, &commaQuarter);
-        //         try self.createBuiltin("h@", 0, &fetchHalf);
-        //         try self.createBuiltin("h!", 0, &storeHalf);
-        //         try self.createBuiltin("h,", 0, &commaHalf);
         try self.createBuiltin("'", 0, &tick);
         try self.createBuiltin("[']", word_immediate_flag, &bracketTick);
         try self.createBuiltin("[", word_immediate_flag, &lBracket);
@@ -510,28 +515,6 @@ pub const VM = struct {
 
     //;
 
-    // TODO dont take 'self'
-    pub fn checkedRead(self: *Self, comptime T: type, addr: Cell) Error!T {
-        _ = self;
-        if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        const read_from: *const T = @ptrFromInt(addr);
-        return read_from.*;
-    }
-
-    // TODO handle masking the bits of val to fit sizeof(T)
-    //      dont take 'self'
-    pub fn checkedWrite(
-        self: *Self,
-        comptime T: type,
-        addr: Cell,
-        val: T,
-    ) Error!void {
-        _ = self;
-        if (addr % @alignOf(T) != 0) return error.AlignmentError;
-        const write_to: *T = @ptrFromInt(addr);
-        write_to.* = val;
-    }
-
     pub fn sliceAt(comptime T: type, addr: Cell, len: Cell) []T {
         var str: []T = undefined;
         str.ptr = @ptrFromInt(addr);
@@ -608,12 +591,43 @@ pub const VM = struct {
 
     //;
 
-    // word header is:
-    // |        | | |  ...  |  ...  | ...
-    //  ^        ^ ^ ^       ^       ^
-    //  addr of  | | name    |       code
-    //  previous | name_len  padding to @alignOf(Cell)
-    //  word     flags
+    pub const WordHeader = packed struct {
+        const WordHeaderSelf = @This();
+
+        //       | WordHeader |
+        // | ... |        | | |  ...  |  ...  | ...
+        //  ^     ^        ^ ^ ^       ^       ^
+        //  |     addr of  | | name    |       code
+        //  |     previous | name_len  padding to @alignOf(Cell)
+        //  |     word     flags
+        //  padding to @alignOf(WordHeader)
+
+        previous: Cell,
+        flags: u8,
+        name_len: u8,
+
+        pub fn nameSlice(self: *WordHeaderSelf) []u8 {
+            return sliceAt(u8, @intFromPtr(&self.name_len) + @sizeOf(u8), self.name_len);
+        }
+
+        pub fn nameSliceConst(self: *const WordHeaderSelf) []const u8 {
+            return sliceAt(u8, @intFromPtr(&self.name_len) + @sizeOf(u8), self.name_len);
+        }
+
+        pub fn getCfa(self: *const WordHeaderSelf) Cell {
+            const name = self.nameSliceConst();
+            const name_end_addr = @intFromPtr(name.ptr) + name.len;
+            return alignAddr(Cell, name_end_addr);
+        }
+    };
+
+    // NOTE: currently unused
+    pub const Xt = packed struct {
+        pub const Type = enum(Cell) { zig, forth };
+
+        ty: Cell,
+        fn_ptr: Cell,
+    };
 
     // builtins are:
     // | WORD HEADER ... | .zig   | fn_ptr |
@@ -626,8 +640,7 @@ pub const VM = struct {
         name: []const u8,
         flags: u8,
     ) Error!void {
-        // TODO check word len isnt too long?
-        self.here = alignAddr(Cell, self.here);
+        self.here = alignAddr(WordHeader, self.here);
         const new_latest = self.here;
         try self.push(self.latest);
         try self.comma();
@@ -647,29 +660,6 @@ pub const VM = struct {
         }
 
         self.latest = new_latest;
-    }
-
-    pub fn wordHeaderPrevious(addr: Cell) Cell {
-        const previous_ptr: *const Cell = @ptrFromInt(addr);
-        return previous_ptr.*;
-    }
-
-    pub fn wordHeaderFlags(addr: Cell) *u8 {
-        return @ptrFromInt(addr + @sizeOf(Cell));
-    }
-
-    pub fn wordHeaderName(addr: Cell) []u8 {
-        var name: []u8 = undefined;
-        name.ptr = @ptrFromInt(addr + @sizeOf(Cell) + 2);
-        const name_len_ptr: *u8 = @ptrFromInt(addr + @sizeOf(Cell) + 1);
-        name.len = name_len_ptr.*;
-        return name;
-    }
-
-    pub fn wordHeaderCodeFieldAddress(addr: Cell) Cell {
-        const name = wordHeaderName(addr);
-        const name_end_addr = @intFromPtr(name.ptr) + name.len;
-        return alignAddr(Cell, name_end_addr);
     }
 
     pub fn createBuiltin(
@@ -695,23 +685,25 @@ pub const VM = struct {
     }
 
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
-        const name = sliceAt(u8, addr, len);
+        const to_find = sliceAt(u8, addr, len);
+
+        // std.debug.print("{s}\n", .{to_find});
 
         var check = self.latest;
-        while (check != 0) : (check = wordHeaderPrevious(check)) {
-            const check_name = wordHeaderName(check);
-            const flags = wordHeaderFlags(check).*;
-            if (check_name.len != len) continue;
+        var header: *const WordHeader = undefined;
+        while (check != 0) : (check = header.previous) {
+            header = @ptrFromInt(check);
+            const name = header.nameSliceConst();
+            const flags = header.flags;
+            if (name.len != len) continue;
             if ((flags & word_hidden_flag) != 0) continue;
 
             var name_matches: bool = true;
-            var i: usize = 0;
-            for (name) |name_ch| {
-                if (std.ascii.toUpper(check_name[i]) != std.ascii.toUpper(name_ch)) {
+            for (to_find, name) |to_find_ch, name_ch| {
+                if (std.ascii.toUpper(to_find_ch) != std.ascii.toUpper(name_ch)) {
                     name_matches = false;
                     break;
                 }
-                i += 1;
             }
 
             if (name_matches) {
@@ -720,7 +712,7 @@ pub const VM = struct {
         }
 
         if (check == 0) {
-            self.word_not_found = name;
+            self.word_not_found = to_find;
             return error.WordNotFound;
         } else {
             return check;
@@ -782,9 +774,9 @@ pub const VM = struct {
             const addr = try self.pop();
             const is_compiling = self.state != forth_false;
             if (was_found == forth_true) {
-                const flags = wordHeaderFlags(addr).*;
-                const is_immediate = (flags & word_immediate_flag) != 0;
-                const xt = wordHeaderCodeFieldAddress(addr);
+                const header: *const WordHeader = @ptrFromInt(addr);
+                const is_immediate = (header.flags & word_immediate_flag) != 0;
+                const xt = header.getCfa();
                 if (is_compiling and !is_immediate) {
                     try self.push(xt);
                     try self.comma();
@@ -1166,17 +1158,21 @@ pub const VM = struct {
 
     pub fn makeImmediate(self: *Self) Error!void {
         const addr = try self.pop();
-        wordHeaderFlags(addr).* ^= word_immediate_flag;
+        // TODO alignedAccess on these
+        const header: *WordHeader = @ptrFromInt(addr);
+        header.flags ^= word_immediate_flag;
     }
 
     pub fn hide(self: *Self) Error!void {
         const addr = try self.pop();
-        wordHeaderFlags(addr).* ^= word_hidden_flag;
+        const header: *WordHeader = @ptrFromInt(addr);
+        header.flags ^= word_hidden_flag;
     }
 
     pub fn getCfa(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.push(wordHeaderCodeFieldAddress(addr));
+        const header: *WordHeader = @ptrFromInt(addr);
+        try self.push(header.getCfa());
     }
 
     pub fn branch(self: *Self) Error!void {
@@ -1337,10 +1333,8 @@ pub const VM = struct {
 
     pub fn plusStore(self: *Self) Error!void {
         const addr = try self.pop();
-        const n = try self.pop();
-        // TODO use checkedWrite
-        const ptr: *Cell = @ptrFromInt(addr);
-        ptr.* +%= n;
+        const val = try self.pop();
+        (try alignedAccess(Cell, addr)).* +%= val;
     }
 
     //;
@@ -1362,8 +1356,8 @@ pub const VM = struct {
     // TODO test works
     //      seems to work
     pub fn litString(self: *Self) Error!void {
+        const len = (try alignedAccess(Cell, self.return_to + @sizeOf(Cell))).*;
         const str_addr = self.return_to + 2 * @sizeOf(Cell);
-        const len = try self.checkedRead(Cell, self.return_to + @sizeOf(Cell));
         try self.push(str_addr);
         try self.push(len);
         self.return_to = alignAddr(Cell, str_addr + len) - @sizeOf(Cell);
@@ -1487,9 +1481,9 @@ pub const VM = struct {
         }
         var i: usize = 0;
         while (i < ct) : (i += 1) {
-            if ((try self.checkedRead(u8, addr_a)) !=
-                (try self.checkedRead(u8, addr_b)))
-            {
+            const a_val = @as(*u8, @ptrFromInt(addr_a + i)).*;
+            const b_val = @as(*u8, @ptrFromInt(addr_b + i)).*;
+            if (a_val != b_val) {
                 try self.push(forth_false);
                 return;
             }
@@ -1547,13 +1541,14 @@ pub const VM = struct {
 
     pub fn fFetch(self: *Self) Error!void {
         const addr = try self.pop();
-        try self.fstack.push(try self.checkedRead(Float, addr));
+        const val = (try alignedAccess(Float, addr)).*;
+        try self.fstack.push(val);
     }
 
     pub fn fStore(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.fstack.pop();
-        try self.checkedWrite(Float, addr, val);
+        (try alignedAccess(Float, addr)).* = val;
     }
 
     pub fn fComma(self: *Self) Error!void {
@@ -1564,10 +1559,8 @@ pub const VM = struct {
 
     pub fn fPlusStore(self: *Self) Error!void {
         const addr = try self.pop();
-        const n = try self.fstack.pop();
-        // TODO checked read/write
-        const ptr: *Float = @ptrFromInt(addr);
-        ptr.* += n;
+        const val = try self.fstack.pop();
+        (try alignedAccess(Float, addr)).* += val;
     }
 
     pub fn fParse(self: *Self) Error!void {

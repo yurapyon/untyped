@@ -1,4 +1,3 @@
-here @
 word : define
 forth-fn-id ,
 ' word , ' define ,
@@ -6,16 +5,13 @@ forth-fn-id ,
 ' lit , forth-fn-id , ' , ,
 ' ] ,
 ' exit ,
-latest !
 
-here @
 word ; define
 forth-fn-id ,
 ' lit , ' exit , ' , ,
 ' latest , ' @ , ' hide ,
 ' [ ,
 ' exit ,
-latest !
 latest @ make-immediate
 
 : immediate latest @ make-immediate ; immediate
