@@ -16,6 +16,8 @@ pub fn readFile(allocator: Allocator, filename: []const u8) ![]u8 {
 }
 
 pub fn demo(allocator: Allocator) !void {
+    std.debug.print("untyped\n", .{});
+
     var to_load: ?[:0]const u8 = null;
     var i: usize = 0;
     var args = std.process.args();
@@ -31,11 +33,8 @@ pub fn demo(allocator: Allocator) !void {
 
     if (to_load) |filename| {
         var f = try readFile(allocator, filename);
-        vm.source_user_input = lib.VM.forth_false;
-        vm.source_ptr = @intFromPtr(f.ptr);
-        vm.source_len = f.len;
-        vm.source_in = 0;
-        vm.interpret() catch |err| switch (err) {
+        defer allocator.free(f);
+        vm.interpretBuffer(f) catch |err| switch (err) {
             error.WordNotFound => {
                 std.debug.print("word not found: {s}\n", .{vm.word_not_found});
                 return err;
@@ -51,13 +50,15 @@ pub fn demo(allocator: Allocator) !void {
     vm.source_user_input = lib.VM.forth_true;
     try vm.refill();
     try vm.drop();
-    vm.interpret() catch |err| switch (err) {
-        error.WordNotFound => {
-            std.debug.print("word not found: {s}\n", .{vm.word_not_found});
-            return err;
-        },
-        else => return err,
-    };
+    while (!vm.should_bye) {
+        vm.interpret() catch |err| switch (err) {
+            error.WordNotFound => {
+                std.debug.print("word not found: {s}\n", .{vm.word_not_found});
+                // return err;
+            },
+            else => return err,
+        };
+    }
 }
 
 test {

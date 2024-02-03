@@ -808,9 +808,18 @@ create u.buffer 8 cell * allot
 : source
   source-ptr @ source-len @ ;
 
+: compile-this? immediate? 0= state @ and ;
+
+: basic-prompt ." > " ;
+
+' basic-prompt value prompt-hook
+
 : interpret ( -- )
   word dup 0= if
     2drop
+    source-user-input if
+      prompt-hook execute
+    then
     refill 0= if
       exit
     then
@@ -818,14 +827,15 @@ create u.buffer 8 cell * allot
   then
   2dup find if
     -rot 2drop
-    dup immediate? 0= state @ and if
+    dup compile-this? if
       >cfa ,
     else
       >cfa execute
     then
     tailcall recurse
   else
-    drop \ drop invalid find address
+    \ drop invalid find address
+    drop
     2dup >number if
       state @ if
         ['] lit , ,
@@ -834,17 +844,19 @@ create u.buffer 8 cell * allot
       then
       2drop tailcall recurse
     else
-      drop \ drop invalid number
+      \ drop invalid number
+      drop
       2dup >float if
         state @ if
           ['] litfloat , f, align
         then
         2drop tailcall recurse
       else
-        fdrop \ drop invalid float
+        \ drop invalid float
+        fdrop
         \ todo better error
         ." word not found: " type cr
-        bye
+        tailcall recurse
       then
     then
   then ;

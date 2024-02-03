@@ -4,13 +4,23 @@ const Allocator = std.mem.Allocator;
 //;
 
 // TODO new 2024
-// reduce number of builtins
-// probably dont have half/quarter cell be in zig
-// wordlists would be nice, some type of modules
+// -- Wordlists / modules
+//      this is about adding more builtins at runtime
+//        wordlists in terms of 'modules made up of forth code'
+//          could probably be implemented in forth
+//      dynamic linking
+//      separate things into separate libs
+//        float stuff
+//        file r/w stuff
+//        other data sizes besides cell
+//      reduce number of builtins ( can do this with modules )
+// -- Error reporting / stack trace
+//      "can use the return stack"
+//        xt's end up on the return stack but they dont have debug info
+// -- Shell functionality
+// -- CLI or terminal drawing, gfx
 
 // TODO
-// better error reporting
-// wordlists maybe
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
@@ -19,10 +29,6 @@ const Allocator = std.mem.Allocator;
 //   error handling in general
 //   error ( num -- ) which passes error num to zig
 //     can be used with zig enums
-// separate things into separate libs
-//   float stuff
-//   file r/w stuff
-//   other data sizes besides cell
 // ptrFromInt alignment errors
 // figure out how jump relates to lit, and maybe make it more general
 // mods with signed ints does not work
@@ -39,7 +45,7 @@ const Allocator = std.mem.Allocator;
 
 // state == forth_true in compilation state
 
-// alignedAccess should be used anywhere the address of an access can be influenced from forth itself
+// alignedAccess should be used anywhere the address of an access can be influenced at runtime
 //   which is pretty much everywhere
 
 pub const VM = struct {
@@ -94,12 +100,6 @@ pub const VM = struct {
 
     const file_read_flag = 0x1;
     const file_write_flag = 0x2;
-
-    // TODO where is this used
-    pub const ParseNumberResult = union(enum) {
-        Float: Float,
-        Cell: Cell,
-    };
 
     pub const XtType = enum(Cell) {
         zig,
@@ -274,7 +274,6 @@ pub const VM = struct {
     here: Cell,
     base: Cell,
     state: Cell,
-    sp: Cell,
 
     source_user_input: Cell,
     source_ptr: Cell,
@@ -425,7 +424,6 @@ pub const VM = struct {
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
         try self.createBuiltin("cell", 0, &cell);
-        // try self.createBuiltin("half", 0, &half);
         try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
 
@@ -523,8 +521,8 @@ pub const VM = struct {
     }
 
     pub fn alignAddr(comptime T: type, addr: Cell) Cell {
-        const off_aligned = @alignOf(T) - (addr % @alignOf(T));
-        return if (off_aligned == @alignOf(T)) addr else addr + off_aligned;
+        const alignment_error = @alignOf(T) - (addr % @alignOf(T));
+        return if (alignment_error == @alignOf(T)) addr else addr + alignment_error;
     }
 
     pub fn parseNumber(str: []const u8, base_: Cell) Error!Cell {
@@ -595,11 +593,11 @@ pub const VM = struct {
         const WordHeaderSelf = @This();
 
         //       | WordHeader |
-        // | ... |        | | |  ...  |  ...  | ...
-        //  ^     ^        ^ ^ ^       ^       ^
-        //  |     addr of  | | name    |       code
-        //  |     previous | name_len  padding to @alignOf(Cell)
-        //  |     word     flags
+        // | ... |        | | |  ...  |0|  ...  | ...
+        //  ^     ^        ^ ^ ^       ^ ^       ^
+        //  |     addr of  | | name    | |       code
+        //  |     previous | name_len  | 0 padding to @alignOf(Cell)
+        //  |     word     flags       terminator
         //  padding to @alignOf(WordHeader)
 
         previous: Cell,
@@ -616,7 +614,7 @@ pub const VM = struct {
 
         pub fn getCfa(self: *const WordHeaderSelf) Cell {
             const name = self.nameSliceConst();
-            const name_end_addr = @intFromPtr(name.ptr) + name.len;
+            const name_end_addr = @intFromPtr(name.ptr) + name.len + 1;
             return alignAddr(Cell, name_end_addr);
         }
     };
@@ -626,7 +624,6 @@ pub const VM = struct {
         pub const Type = enum(Cell) { zig, forth };
 
         ty: Cell,
-        fn_ptr: Cell,
     };
 
     // builtins are:
@@ -653,6 +650,9 @@ pub const VM = struct {
             try self.push(ch);
             try self.commaByte();
         }
+
+        try self.push(0);
+        try self.commaByte();
 
         while ((self.here % @alignOf(Cell)) != 0) {
             try self.push(0);
@@ -722,25 +722,28 @@ pub const VM = struct {
     // ===
 
     pub fn execute(self: *Self, xt: Cell) Error!void {
-        var curr_xt = xt;
-        self.return_to = 0; // 0 here is a marker for an addr that wont be in forth memory
+        const xt_type_ptr: *const XtType = @ptrFromInt(xt);
+        const xt_type = xt_type_ptr.*;
+        switch (xt_type) {
+            .forth => {
+                try self.rstack.push(self.return_to);
+                self.return_to = xt;
+            },
+            .zig => {
+                const zig_fn = builtinFnPtr(xt);
+                try zig_fn(self);
+            },
+        }
+    }
 
-        // TODO clean up the should_bye and should_quit logic
+    pub fn executeLoop(self: *Self, xt: Cell) Error!void {
+        var curr_xt = xt;
+        self.return_to = 0;
+
         self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
-            const xt_type_ptr: *const XtType = @ptrFromInt(curr_xt);
-            const xt_type = xt_type_ptr.*;
-            switch (xt_type) {
-                .forth => {
-                    try self.rstack.push(self.return_to);
-                    self.return_to = curr_xt;
-                },
-                .zig => {
-                    const zig_fn = builtinFnPtr(curr_xt);
-                    try zig_fn(self);
-                },
-            }
+            try self.execute(curr_xt);
             if (self.return_to == 0) {
                 try self.quit();
                 break;
@@ -749,6 +752,9 @@ pub const VM = struct {
             curr_xt = @as(*Cell, @ptrFromInt(self.return_to)).*;
         }
     }
+
+    // 'quit' stops the current execution loop and goes back to top level interpreter
+    // 'bye' quits everything
 
     pub fn interpret(self: *Self) Error!void {
         self.should_bye = false;
@@ -781,7 +787,7 @@ pub const VM = struct {
                     try self.push(xt);
                     try self.comma();
                 } else {
-                    try self.execute(xt);
+                    try self.executeLoop(xt);
                 }
             } else {
                 var str = sliceAt(u8, word_addr, word_len);
@@ -894,16 +900,7 @@ pub const VM = struct {
 
     pub fn executeForth(self: *Self) Error!void {
         const xt_addr = try self.pop();
-        const xt_type = (try alignedAccess(XtType, xt_addr)).*;
-        switch (xt_type) {
-            .zig => {
-                try builtinFnPtr(xt_addr)(self);
-            },
-            .forth => {
-                try self.rstack.push(self.return_to);
-                self.return_to = xt_addr;
-            },
-        }
+        try self.execute(xt_addr);
     }
 
     pub fn quit(self: *Self) Error!void {
@@ -1342,7 +1339,7 @@ pub const VM = struct {
     pub fn showStack(self: *Self) Error!void {
         const stk = self.stack.toSlice();
 
-        std.debug.print("stack depth: {} ", .{stk.len});
+        std.debug.print("stack depth: {}\n", .{stk.len});
 
         var i: usize = 0;
         while (i < stk.len) : (i += 1) {
@@ -1775,6 +1772,13 @@ pub const VM = struct {
 
     // ===
 
+    pub fn setSource(self: *Self, source: []const u8) void {
+        self.source_user_input = forth_false;
+        self.source_ptr = @intFromPtr(source.ptr);
+        self.source_len = source.len;
+        self.source_in = 0;
+    }
+
     pub fn sourceUserInput(self: *Self) Error!void {
         try self.push(@intFromPtr(&self.source_user_input));
     }
@@ -1791,30 +1795,27 @@ pub const VM = struct {
         try self.push(@intFromPtr(&self.source_in));
     }
 
-    fn refillReader(self: *Self, reader: anytype) Error!void {
-        var line = reader.readUntilDelimiterOrEof(self.input_buffer[0..(input_buffer_size - 1)], '\n') catch |err| {
-            switch (err) {
-                // TODO
-                error.StreamTooLong => unreachable,
-                // TODO
-                else => unreachable,
-            }
-        };
-        if (line) |s| {
-            self.input_buffer[s.len] = '\n';
-            self.source_ptr = @intFromPtr(self.input_buffer);
-            self.source_len = s.len + 1;
-            self.source_in = 0;
-            try self.push(forth_true);
-        } else {
-            try self.push(forth_false);
-        }
-    }
-
     pub fn refill(self: *Self) Error!void {
         if (self.source_user_input == forth_true) {
-            std.debug.print("> ", .{});
-            try self.refillReader(std.io.getStdIn().reader());
+            const reader = std.io.getStdIn().reader();
+            const input_buffer = self.input_buffer[0..(input_buffer_size - 1)];
+            var line = reader.readUntilDelimiterOrEof(input_buffer, '\n') catch |err| {
+                switch (err) {
+                    // TODO
+                    error.StreamTooLong => unreachable,
+                    // TODO
+                    else => unreachable,
+                }
+            };
+            if (line) |s| {
+                self.input_buffer[s.len] = '\n';
+                self.source_ptr = @intFromPtr(self.input_buffer);
+                self.source_len = s.len + 1;
+                self.source_in = 0;
+                try self.push(forth_true);
+            } else {
+                try self.push(forth_false);
+            }
         } else {
             try self.push(forth_false);
         }
