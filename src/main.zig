@@ -28,7 +28,8 @@ pub fn demo(allocator: Allocator) !void {
         i += 1;
     }
 
-    var vm = try lib.VM.init(allocator);
+    var vm: lib.VM = undefined;
+    try vm.init(allocator);
     defer vm.deinit();
 
     if (to_load) |filename| {

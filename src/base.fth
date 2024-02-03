@@ -345,6 +345,7 @@ latest @ make-immediate
   >cfa 2 cells + ;
 
 : to
+  \ todo word not found error here
   word find unwrap >value-data
   state @ if
     ['] lit , ,
@@ -355,6 +356,7 @@ latest @ make-immediate
   ; immediate
 
 : +to
+  \ todo word not found error here
   word find unwrap >value-data
   state @ if
     ['] lit , ,
@@ -582,7 +584,7 @@ latest @ make-immediate
 : chop-digit ( u -- u-lastdigit lastdigit )
   base @ u/mod swap ;
 
-\ todo why is this 8 cells
+\ bitSize(byte) * byteSize(cell) is necessary to print cells in binary
 create u.buffer 8 cell * allot
 
 : read-to-u.buffer ( u -- uwidth )
@@ -810,11 +812,6 @@ create u.buffer 8 cell * allot
 : source
   source-ptr @ source-len @ ;
 
-
-: basic-prompt ." > " ;
-
-' basic-prompt value prompt-hook
-
 : is-int? 1 = ;
 
 \ 1 for number, -1 for float, 0 for not numeric
@@ -830,7 +827,7 @@ create u.buffer 8 cell * allot
       0
     then
   then
-  nip nip
+  -rot 2drop
   ;
 
 : compile-numeric ( value/f:value type -- )
@@ -841,6 +838,9 @@ create u.buffer 8 cell * allot
   then
   ;
 
+: basic-prompt ." > " ;
+
+' basic-prompt value prompt-hook
 
 : interpret ( -- )
   word dup 0= if
@@ -854,11 +854,10 @@ create u.buffer 8 cell * allot
   else
     2dup find if
       -rot 2drop
-      dup >cfa swap
-      immediate? 0= state @ and if
-        ,
+      dup immediate? 0= state @ and if
+        >cfa ,
       else
-        execute
+        >cfa execute
       then
     else
       drop
@@ -866,9 +865,9 @@ create u.buffer 8 cell * allot
         state @ if
           compile-numeric
         else
-          drop
+          drop -rot
         then
-        -rot 2drop
+        2drop
       else
         ." word not found: " type cr
       then

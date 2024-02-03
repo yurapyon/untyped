@@ -8,15 +8,15 @@ const Allocator = std.mem.Allocator;
 // -- Error reporting / stack trace
 //      "can use the return stack"
 //        xt's end up on the return stack but they dont have debug info
+//        when you compile something it has references to xt's not words
+//       xt's could have a word_header_offset, which is 0 for anonymous
+//      debug info could be stored separately from word header
+//      'execution stack' could be more reliable than return stack
 // -- Shell functionality
 // -- CLI or terminal drawing, gfx
 // dont use std.debug.print
-// 'true u.' trunctaion error
-// use @truncate
-
-// TODO
 // -- Wordlists / modules
-//  * Would be cool, but not necessary
+//    useful for if youre embedding and want to do hotreloads
 //      this is about adding more builtins at runtime
 //        wordlists in terms of 'modules made up of forth code'
 //          could probably be implemented in forth
@@ -28,6 +28,8 @@ const Allocator = std.mem.Allocator;
 //      reduce number of builtins ( can do this with modules )
 //    need to extend the error type
 //    global data in these modules needs to be allocated within vm memory
+
+// TODO
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
@@ -104,6 +106,7 @@ pub const VM = struct {
     const fstack_start = rstack_start + rstack_size;
     const input_buffer_start = fstack_start + fstack_size;
     const dictionary_start = input_buffer_start + input_buffer_size;
+    const dictionary_size = mem_size - dictionary_start;
 
     const file_read_flag = 0x1;
     const file_write_flag = 0x2;
@@ -261,9 +264,23 @@ pub const VM = struct {
         };
     }
 
-    const DStack = Stack(Cell, stack_size);
-    const RStack = Stack(Cell, rstack_size);
-    const FStack = Stack(Float, fstack_size);
+    pub const DStack = Stack(Cell, stack_size);
+    pub const RStack = Stack(Cell, rstack_size);
+    pub const FStack = Stack(Float, fstack_size);
+
+    pub const Dictionary = struct {
+        const DictionarySelf = @This();
+
+        memory: []u8,
+        latest: Cell,
+        here: Cell,
+
+        pub fn init(self: *DictionarySelf, memory: []u8, latest_: Cell) void {
+            self.memory = memory;
+            self.latest = latest_;
+            self.here = @intFromPtr(self.memory.ptr);
+        }
+    };
 
     allocator: Allocator,
 
@@ -277,8 +294,6 @@ pub const VM = struct {
     quit_address: Cell,
 
     mem: []u8,
-    latest: Cell,
-    here: Cell,
     base: Cell,
     state: Cell,
 
@@ -291,40 +306,39 @@ pub const VM = struct {
     rstack: RStack,
     fstack: FStack,
     input_buffer: [*]u8,
-    dictionary: [*]u8,
+
+    main_dictionary: Dictionary,
+    current_dictionary: *Dictionary,
 
     word_not_found: []u8,
 
-    pub fn init(allocator: Allocator) Error!Self {
-        var ret: Self = undefined;
+    pub fn init(self: *Self, allocator: Allocator) Error!void {
+        self.allocator = allocator;
+        self.return_to = 0;
 
-        ret.allocator = allocator;
-        ret.return_to = 0;
+        self.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(WordHeader), null);
+        self.stack.init(@ptrCast(@alignCast(&self.mem[stack_start])));
+        self.rstack.init(@ptrCast(@alignCast(&self.mem[rstack_start])));
+        self.fstack.init(@ptrCast(@alignCast(&self.mem[fstack_start])));
+        self.input_buffer = @ptrCast(&self.mem[input_buffer_start]);
 
-        ret.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(WordHeader), null);
-        ret.stack.init(@ptrCast(@alignCast(&ret.mem[stack_start])));
-        ret.rstack.init(@ptrCast(@alignCast(&ret.mem[rstack_start])));
-        ret.fstack.init(@ptrCast(@alignCast(&ret.mem[fstack_start])));
-        ret.input_buffer = @ptrCast(&ret.mem[input_buffer_start]);
-        ret.dictionary = @ptrCast(&ret.mem[dictionary_start]);
+        self.main_dictionary.init(self.mem[dictionary_start..], 0);
+        self.current_dictionary = &self.main_dictionary;
 
         // init vars
-        ret.latest = 0;
-        ret.here = @intFromPtr(ret.dictionary);
-        ret.base = 10;
-        ret.state = forth_false;
+        self.base = 10;
+        self.state = forth_false;
 
-        try ret.initBuiltins();
-        ret.interpretBuffer(baseLib) catch |err| switch (err) {
+        try self.initBuiltins();
+        self.interpretBuffer(baseLib) catch |err| switch (err) {
             error.WordNotFound => {
-                std.debug.print("word not found: {s}\n", .{ret.word_not_found});
+                std.debug.print("word not found: {s}\n", .{self.word_not_found});
                 return err;
             },
             else => return err,
         };
 
-        ret.source_user_input = forth_true;
-        return ret;
+        self.source_user_input = forth_true;
     }
 
     pub fn deinit(self: *Self) void {
@@ -337,18 +351,18 @@ pub const VM = struct {
         try self.createBuiltin("exit", 0, &exit_);
         try self.createBuiltin("lit", 0, &lit);
         {
-            const header: *const WordHeader = @ptrFromInt(self.latest);
+            const header: *const WordHeader = @ptrFromInt(self.current_dictionary.latest);
             self.lit_address = header.getCfa();
         }
         try self.createBuiltin("litfloat", 0, &litFloat);
         {
-            const header: *const WordHeader = @ptrFromInt(self.latest);
+            const header: *const WordHeader = @ptrFromInt(self.current_dictionary.latest);
             self.litFloat_address = header.getCfa();
         }
         try self.createBuiltin("execute", 0, &executeForth);
         try self.createBuiltin("quit", 0, &quit);
         {
-            const header: *const WordHeader = @ptrFromInt(self.latest);
+            const header: *const WordHeader = @ptrFromInt(self.current_dictionary.latest);
             self.quit_address = header.getCfa();
         }
         try self.createBuiltin("bye", 0, &bye);
@@ -507,6 +521,11 @@ pub const VM = struct {
         try self.createBuiltin("calc-timestamp", 0, &calcTimestamp);
         try self.createBuiltin("now", 0, &now);
         try self.createBuiltin("timezone", 0, &timezone);
+
+        try self.createBuiltin("alloc-dictionary", 0, &allocDictionary);
+        try self.createBuiltin("free-dictionary", 0, &freeDictionary);
+        try self.createBuiltin("use-dictionary", 0, &useDictionary);
+        try self.createBuiltin("main-dictionary", 0, &mainDictionary);
     }
 
     //;
@@ -631,23 +650,24 @@ pub const VM = struct {
     pub const Xt = packed struct {
         pub const Type = enum(Cell) { zig, forth };
 
+        header_ptr: Cell,
         ty: Cell,
     };
 
     // builtins are:
-    // | WORD HEADER ... | .zig   | fn_ptr |
+    // | WORD HEADER ... | header_ptr | .zig   | fn_ptr |
 
     // forth words are:
-    // | WORD HEADER ... | .forth | xt ... | EXIT |
+    // | WORD HEADER ... | header_ptr | .forth | xt ... | EXIT |
 
     pub fn createWordHeader(
         self: *Self,
         name: []const u8,
         flags: u8,
     ) Error!void {
-        self.here = alignAddr(WordHeader, self.here);
-        const new_latest = self.here;
-        try self.push(self.latest);
+        self.current_dictionary.here = alignAddr(WordHeader, self.current_dictionary.here);
+        const new_latest = self.current_dictionary.here;
+        try self.push(self.current_dictionary.latest);
         try self.comma();
         try self.push(flags);
         try self.commaByte();
@@ -662,12 +682,12 @@ pub const VM = struct {
         try self.push(0);
         try self.commaByte();
 
-        while ((self.here % @alignOf(Cell)) != 0) {
+        while ((self.current_dictionary.here % @alignOf(Cell)) != 0) {
             try self.push(0);
             try self.commaByte();
         }
 
-        self.latest = new_latest;
+        self.current_dictionary.latest = new_latest;
     }
 
     pub fn createBuiltin(
@@ -695,13 +715,14 @@ pub const VM = struct {
     pub fn findWord(self: *Self, addr: Cell, len: Cell) Error!Cell {
         const to_find = sliceAt(u8, addr, len);
 
-        // std.debug.print("{s}\n", .{to_find});
+        // std.debug.print("{s} {}\n", .{ to_find, check, });
 
-        var check = self.latest;
+        var check = self.current_dictionary.latest;
         var header: *const WordHeader = undefined;
         while (check != 0) : (check = header.previous) {
             header = @ptrFromInt(check);
             const name = header.nameSliceConst();
+            // std.debug.print("{s}\n", .{ name, });
             const flags = header.flags;
             if (name.len != len) continue;
             if ((flags & word_hidden_flag) != 0) continue;
@@ -814,7 +835,7 @@ pub const VM = struct {
                         try self.comma();
                         try self.fstack.push(fl);
                         try self.fComma();
-                        self.here = alignAddr(Cell, self.here);
+                        self.current_dictionary.here = alignAddr(Cell, self.current_dictionary.here);
                     } else {
                         try self.fstack.push(fl);
                     }
@@ -931,7 +952,7 @@ pub const VM = struct {
     }
 
     pub fn dictionaryStart(self: *Self) Error!void {
-        try self.push(@intFromPtr(self.dictionary));
+        try self.push(@intFromPtr(self.current_dictionary.memory.ptr));
     }
 
     pub fn state(self: *Self) Error!void {
@@ -939,11 +960,11 @@ pub const VM = struct {
     }
 
     pub fn latest(self: *Self) Error!void {
-        try self.push(@intFromPtr(&self.latest));
+        try self.push(@intFromPtr(&self.current_dictionary.latest));
     }
 
     pub fn here(self: *Self) Error!void {
-        try self.push(@intFromPtr(&self.here));
+        try self.push(@intFromPtr(&self.current_dictionary.here));
     }
 
     pub fn base(self: *Self) Error!void {
@@ -1053,7 +1074,7 @@ pub const VM = struct {
         const len = try self.pop();
         const addr = try self.pop();
         if (len == 0) {
-            try self.createWordHeader("", 0);
+            try self.createWordHeader("", word_hidden_flag);
         } else if (len < word_max_len) {
             try self.createWordHeader(sliceAt(u8, addr, len), 0);
         } else {
@@ -1100,9 +1121,9 @@ pub const VM = struct {
     }
 
     pub fn comma(self: *Self) Error!void {
-        try self.push(self.here);
+        try self.push(self.current_dictionary.here);
         try self.store();
-        self.here += @sizeOf(Cell);
+        self.current_dictionary.here += @sizeOf(Cell);
     }
 
     pub fn fetchByte(self: *Self) Error!void {
@@ -1114,14 +1135,14 @@ pub const VM = struct {
     pub fn storeByte(self: *Self) Error!void {
         const addr = try self.pop();
         const val = try self.pop();
-        const byte: u8 = @intCast(val & 0xff);
+        const byte: u8 = @truncate(val);
         (try alignedAccess(u8, addr)).* = byte;
     }
 
     pub fn commaByte(self: *Self) Error!void {
-        try self.push(self.here);
+        try self.push(self.current_dictionary.here);
         try self.storeByte();
-        self.here += 1;
+        self.current_dictionary.here += 1;
     }
 
     pub fn tick(self: *Self) Error!void {
@@ -1176,7 +1197,7 @@ pub const VM = struct {
 
     pub fn getCfa(self: *Self) Error!void {
         const addr = try self.pop();
-        const header: *WordHeader = @ptrFromInt(addr);
+        const header: *WordHeader = try alignedAccess(WordHeader, addr);
         try self.push(header.getCfa());
     }
 
@@ -1274,13 +1295,13 @@ pub const VM = struct {
     pub fn lshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a << @intCast(ct & 0x3f));
+        try self.push(a << @truncate(ct));
     }
 
     pub fn rshift(self: *Self) Error!void {
         const ct = try self.pop();
         const a = try self.pop();
-        try self.push(a >> @intCast(ct & 0x3f));
+        try self.push(a >> @truncate(ct));
     }
 
     //;
@@ -1406,7 +1427,7 @@ pub const VM = struct {
     }
 
     pub fn emit(self: *Self) Error!void {
-        std.debug.print("{c}", .{@as(u8, @intCast(try self.pop() & 0xff))});
+        std.debug.print("{c}", .{@as(u8, @truncate(try self.pop()))});
     }
 
     //;
@@ -1566,9 +1587,10 @@ pub const VM = struct {
     }
 
     pub fn fComma(self: *Self) Error!void {
-        try self.push(self.here);
+        try self.push(self.current_dictionary.here);
         try self.fStore();
-        self.here += @sizeOf(Float);
+        self.current_dictionary.here += @sizeOf(Float);
+        // TODO have to align to cell after this
     }
 
     pub fn fPlusStore(self: *Self) Error!void {
@@ -1816,7 +1838,8 @@ pub const VM = struct {
         if (self.source_user_input == forth_true) {
             const reader = std.io.getStdIn().reader();
             const input_buffer = self.input_buffer[0..(input_buffer_size - 1)];
-            var line = reader.readUntilDelimiterOrEof(input_buffer, '\n') catch |err| {
+            // TODO this breaks something with current_dictionary.latest
+            const line = reader.readUntilDelimiterOrEof(input_buffer, '\n') catch |err| {
                 switch (err) {
                     // TODO
                     error.StreamTooLong => unreachable,
@@ -1890,5 +1913,50 @@ pub const VM = struct {
 
         const offset = c.timezone;
         try self.push(@intCast(offset));
+    }
+
+    // ===
+
+    pub fn allocDictionary(self: *Self) Error!void {
+        const sz = try self.pop();
+        const new_mem = self.allocator.allocWithOptions(u8, sz, @alignOf(WordHeader), null) catch |err|
+            switch (err) {
+            error.OutOfMemory => {
+                try self.push(0);
+                try self.push(forth_false);
+                return;
+            },
+        };
+        errdefer self.allocator.free(new_mem);
+        // note: this should be Cell aligned
+        const dict = self.allocator.create(Dictionary) catch |err|
+            switch (err) {
+            error.OutOfMemory => {
+                try self.push(0);
+                try self.push(forth_false);
+                return;
+            },
+        };
+
+        dict.init(new_mem, self.current_dictionary.latest);
+
+        try self.push(@intFromPtr(dict));
+    }
+
+    pub fn freeDictionary(self: *Self) Error!void {
+        const addr = try self.pop();
+        const dictionary: *Dictionary = @ptrFromInt(addr);
+        self.allocator.free(dictionary.memory);
+        self.allocator.destroy(dictionary);
+    }
+
+    pub fn useDictionary(self: *Self) Error!void {
+        const addr = try self.pop();
+        const dictionary: *Dictionary = @ptrFromInt(addr);
+        self.current_dictionary = dictionary;
+    }
+
+    pub fn mainDictionary(self: *Self) Error!void {
+        try self.push(@intFromPtr(&self.main_dictionary));
     }
 };
