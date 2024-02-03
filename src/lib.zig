@@ -4,7 +4,19 @@ const Allocator = std.mem.Allocator;
 //;
 
 // TODO new 2024
+// aligned access
+// -- Error reporting / stack trace
+//      "can use the return stack"
+//        xt's end up on the return stack but they dont have debug info
+// -- Shell functionality
+// -- CLI or terminal drawing, gfx
+// dont use std.debug.print
+// 'true u.' trunctaion error
+// use @truncate
+
+// TODO
 // -- Wordlists / modules
+//  * Would be cool, but not necessary
 //      this is about adding more builtins at runtime
 //        wordlists in terms of 'modules made up of forth code'
 //          could probably be implemented in forth
@@ -14,13 +26,8 @@ const Allocator = std.mem.Allocator;
 //        file r/w stuff
 //        other data sizes besides cell
 //      reduce number of builtins ( can do this with modules )
-// -- Error reporting / stack trace
-//      "can use the return stack"
-//        xt's end up on the return stack but they dont have debug info
-// -- Shell functionality
-// -- CLI or terminal drawing, gfx
-
-// TODO
+//    need to extend the error type
+//    global data in these modules needs to be allocated within vm memory
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
@@ -423,6 +430,7 @@ pub const VM = struct {
         try self.createBuiltin("-", 0, &minus);
         try self.createBuiltin("*", 0, &times);
         try self.createBuiltin("/mod", 0, &divMod);
+        try self.createBuiltin("u/mod", 0, &uDivMod);
         try self.createBuiltin("cell", 0, &cell);
         try self.createBuiltin(">number", 0, &parseNumberForth);
         try self.createBuiltin("+!", 0, &plusStore);
@@ -1296,12 +1304,21 @@ pub const VM = struct {
     }
 
     pub fn divMod(self: *Self) Error!void {
-        const a: SCell = @intCast(try self.pop());
-        const b: SCell = @intCast(try self.pop());
+        const a: SCell = @bitCast(try self.pop());
+        const b: SCell = @bitCast(try self.pop());
         const q = @divTrunc(b, a);
         const mod = @mod(b, a);
         try self.push(@bitCast(mod));
         try self.push(@bitCast(q));
+    }
+
+    pub fn uDivMod(self: *Self) Error!void {
+        const a = try self.pop();
+        const b = try self.pop();
+        const q = @divTrunc(b, a);
+        const mod = @mod(b, a);
+        try self.push(mod);
+        try self.push(q);
     }
 
     pub fn cell(self: *Self) Error!void {

@@ -40,6 +40,8 @@ latest @ make-immediate
 : 1+ 1 + ;
 : 1- 1 - ;
 : negate 0 swap - ;
+: u/ u/mod nip ;
+: umod u/mod drop ;
 : / /mod nip ;
 : mod /mod drop ;
 : 2* 2 * ;
@@ -572,13 +574,13 @@ latest @ make-immediate
 : uwidth ( u -- width )
   1 swap ( ct u )
   begin
-    base @ / ?dup
+    base @ u/ ?dup
   while
     swap 1+ swap
   repeat ;
 
 : chop-digit ( u -- u-lastdigit lastdigit )
-  base @ /mod swap ;
+  base @ u/mod swap ;
 
 \ todo why is this 8 cells
 create u.buffer 8 cell * allot
@@ -808,11 +810,37 @@ create u.buffer 8 cell * allot
 : source
   source-ptr @ source-len @ ;
 
-: compile-this? immediate? 0= state @ and ;
 
 : basic-prompt ." > " ;
 
 ' basic-prompt value prompt-hook
+
+: is-int? 1 = ;
+
+\ 1 for number, -1 for float, 0 for not numeric
+: >numeric ( addr len -- _/value/f:value type )
+  2dup >number if
+    -rot 1
+  else
+    drop
+    2dup >float if
+      -1
+    else
+      fdrop
+      0
+    then
+  then
+  nip nip
+  ;
+
+: compile-numeric ( value/f:value type -- )
+  is-int? if
+    ['] lit , ,
+  else
+    ['] litfloat , f, align
+  then
+  ;
+
 
 : interpret ( -- )
   word dup 0= if
@@ -823,43 +851,31 @@ create u.buffer 8 cell * allot
     refill 0= if
       exit
     then
-    tailcall recurse
-  then
-  2dup find if
-    -rot 2drop
-    dup compile-this? if
-      >cfa ,
-    else
-      >cfa execute
-    then
-    tailcall recurse
   else
-    \ drop invalid find address
-    drop
-    2dup >number if
-      state @ if
-        ['] lit , ,
+    2dup find if
+      -rot 2drop
+      dup >cfa swap
+      immediate? 0= state @ and if
+        ,
       else
-        -rot
+        execute
       then
-      2drop tailcall recurse
     else
-      \ drop invalid number
       drop
-      2dup >float if
+      2dup >numeric ?dup if
         state @ if
-          ['] litfloat , f, align
+          compile-numeric
+        else
+          drop
         then
-        2drop tailcall recurse
+        -rot 2drop
       else
-        \ drop invalid float
-        fdrop
-        \ todo better error
         ." word not found: " type cr
-        tailcall recurse
       then
     then
-  then ;
+  then
+  tailcall recurse
+  ;
 
 0 cell field saved-source.user-input
   cell field saved-source.ptr
