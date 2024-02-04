@@ -2,4 +2,27 @@ untyped
 
 forth in zig
 
+goals:
+  - modern but remain true to core principles of forth
+    - simplicity
+    - directness
+  - usable as a general purpose language on linux
+  - embeddable in a larger program
+    - should enable hot reloading of code
+    - not afraid to define language features in zig as needed
+
+features:
+  - takes some things from ansi forth and gforth
+  - floats
+  - files
+  - dictionaries 
+    - kindof like wordlists
+    - useful for hot reloading
+
+planned:
+  - error reporting / stack traces
+  - terminal drawing
+  - usable as a shell
+  - dynamic loading of object files to extend functionality
+
 MIT

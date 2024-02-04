@@ -4,41 +4,97 @@ const Allocator = std.mem.Allocator;
 //;
 
 // TODO new 2024
-// aligned access
+// use aligned access instead of ptrFromInt in places
 // -- Error reporting / stack trace
-//      "can use the return stack"
-//        xt's end up on the return stack but they dont have debug info
-//        when you compile something it has references to xt's not words
-//       xt's could have a word_header_offset, which is 0 for anonymous
-//      debug info could be stored separately from word header
-//      'execution stack' could be more reliable than return stack
+//   1. debug info entries can be created for xt's
+//      {
+//        previous_debug_info: Cell,
+//        xt: Cell,
+//        name: []u8,
+//        // file_location: usize,
+//       }
+//      can just save these in the dictionary without a header ??
+//    2.
+//
+//   rdebug stack
+//   * separate stack of { ridx, info }
+//     only save as much data as things you execute/want to have debug info for
+//     easy to turn off
+//     can be used for data as well { ridx, type, info }
+//     possibly slows down execution namely popping off rstack
+//   return stack items
+//   * use existing stack { type, data }
+//
+//   * what is an xt (executable token) or something
+//     xt's are code tagged with whether or not it is a zig builtin or forth word
+//     references to xt's are compiled into forth word xt's
+//   if we want a stack trace: anything thats executable should have debug info
+//     we can either loop up xt's by pointer and keep the info separate
+//       this allows you to attach info after the fact
+//       but its technically 'slower'
+//         but debug info is looked up on a crash anyway
+//       overall more useful
+//       word_header -> cfa -lookup-> debuginfo
+//       doesnt store extra info if you dont want to debug
+//     or have each xt keep a pointer to its info/word header
+//       xt -> word_header -> debug_info
+//       if we put debug_info in the word_header, this means we need a word_header for everything w debug_info
+//   anything that was executed should be recorded
+//     the return stack works well for this but is an imperfect record of 'things executed'
+//       this is because arbitrary data can be put on the return stack
+//     things on the return stack have to be tagged
+//       useful for other things
+//       breaks data layout integrity of return stack
+//       updates at the same time rstack does
+//       { type: Cell, item: Cell }
+//       xt>r d>r >r
+//       xt>r pushes xt to rstack
+//        d>r pushes data to rstack
+//         >r pushes untyped to rstack
+//     or executables should be logged in a separate stack
+//       keeps data layout integrity of rstack but needs to be updated at all the times rstack is
+//         this means it has the same or worse interface than 'rstack items'
+//       more reliable than rstack wrt only having executed xt's on it rather than data
+//     rstack mirror
+//       doesnt mess with rstack data layout
+//       still need to push type info with every stack push
+//      not updating exectuable or mirror stack in turn with rstack would break it
+//        where return stack items dont have this problem
+//      rstack debug info stack
+//        { rstack_index, debug_info }
+//        'easy to turn off' or compile without
+//        slower stack trace resolution on crash
+//        slower execution in debug mode
+//          slower to pop off rstack
+//          we need to check top of this stack whenever we pop off the return stack
+//
 // -- Shell functionality
 // -- CLI or terminal drawing, gfx
 // dont use std.debug.print
-// -- Wordlists / modules
-//    useful for if youre embedding and want to do hotreloads
-//      this is about adding more builtins at runtime
-//        wordlists in terms of 'modules made up of forth code'
-//          could probably be implemented in forth
-//      dynamic linking
-//      separate things into separate libs
-//        float stuff
-//        file r/w stuff
-//        other data sizes besides cell
-//      reduce number of builtins ( can do this with modules )
-//    need to extend the error type
-//    global data in these modules needs to be allocated within vm memory
+// -- object files/modules
+//   this is about adding more builtins at runtime
+//   dynamic linking
+//   separate things into separate libs
+//     float stuff
+//     file r/w stuff
+//     other data sizes besides cell
+//   reduce number of builtins
+//   need to extend the error type
+//   global data in these modules needs to be allocated within vm memory
+// -- dictonaries
+//   think about renaming dictionaries to 'compile unit's
+//   what happens if you allocate a dictionary within a subdictionary
+//   see how named hotreloads could work
+//     delete and reallocate a dictionary at runtime from an include or something
 
 // TODO
 // have a way to notify on overwrite name
 //    hashtable
 //    just do find on the word name before you define
-// 2c, 4c,
-// base.fs, find spots where errors are ignored and abort"
+// base.fth: find spots where errors are ignored and abort"
 //   error handling in general
 //   error ( num -- ) which passes error num to zig
 //     can be used with zig enums
-// ptrFromInt alignment errors
 // figure out how jump relates to lit, and maybe make it more general
 // mods with signed ints does not work
 
@@ -56,6 +112,9 @@ const Allocator = std.mem.Allocator;
 
 // alignedAccess should be used anywhere the address of an access can be influenced at runtime
 //   which is pretty much everywhere
+
+// latest for dictionaries is set on allocDictonary
+//   this makes sense but seems a little jank
 
 pub const VM = struct {
     const Self = @This();
@@ -264,9 +323,21 @@ pub const VM = struct {
         };
     }
 
+    pub const XtStackDebugInfo = packed struct {
+        previous: Cell,
+        xt: Cell,
+        // info
+    };
+
+    pub const RStackDebugInfo = packed struct {
+        ridx: Cell,
+        ty: Cell,
+    };
+
     pub const DStack = Stack(Cell, stack_size);
     pub const RStack = Stack(Cell, rstack_size);
     pub const FStack = Stack(Float, fstack_size);
+    // pub const RDebugStack = Stack(RStackDebugInfo,
 
     pub const Dictionary = struct {
         const DictionarySelf = @This();
@@ -274,6 +345,7 @@ pub const VM = struct {
         memory: []u8,
         latest: Cell,
         here: Cell,
+        latest_xt: Cell,
 
         pub fn init(self: *DictionarySelf, memory: []u8, latest_: Cell) void {
             self.memory = memory;
@@ -654,11 +726,9 @@ pub const VM = struct {
         ty: Cell,
     };
 
-    // builtins are:
-    // | WORD HEADER ... | header_ptr | .zig   | fn_ptr |
-
-    // forth words are:
-    // | WORD HEADER ... | header_ptr | .forth | xt ... | EXIT |
+    // xt's
+    // builtin:    | WORD HEADER ... | .zig   | fn_ptr  |
+    // forth word: | WORD HEADER ... | .forth | *xt ... | ?EXIT |
 
     pub fn createWordHeader(
         self: *Self,
