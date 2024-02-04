@@ -3,7 +3,7 @@ untyped
 forth in zig
 
 goals:
-  - modern but remain true to core principles of forth
+  - remain true to core principles of forth
     - simplicity
     - directness
   - usable as a general purpose language on linux
@@ -15,7 +15,7 @@ features:
   - takes some things from ansi forth and gforth
   - floats
   - files
-  - dictionaries 
+  - dictionaries
     - kindof like wordlists
     - useful for hot reloading
 
