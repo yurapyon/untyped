@@ -18,6 +18,7 @@ features:
   - dictionaries
     - kindof like wordlists
     - useful for hot reloading
+  - coroutines
 
 planned:
   - error reporting / stack traces

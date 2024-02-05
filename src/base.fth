@@ -940,22 +940,17 @@ create include-buf include-buf-size allot
 
 \ ===
 
-false value yielded
+: builtin? @ forth-fn-id = 0= ;
+: forth-word? builtin? 0= ;
 
-: start-coroutine ( xt -- xt/0 saved-stack/0 )
-  false to yielded
-  execute
-  yielded if
-    false to yielded
-    \ save the stack
-  else
-    0
-  then
-  ;
-
-: yield true to yielded r> ;
-
-: resume-coroutine ( xt saved-stack -- xt/0 saved-stack/0 )
-  \ restore stack
-  start-coroutine ;
+: expect ( "predicate" -- )
+  word find unwrap >cfa
+  ['] dup ,
+  ,
+  ['] 0= ,
+  [compile] if
+  ['] drop ,
+  ['] panic ,
+  [compile] then
+  ; immediate
 

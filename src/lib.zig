@@ -104,7 +104,7 @@ const Allocator = std.mem.Allocator;
 //   see how named hotreloads could work
 //     delete and reallocate a dictionary at runtime from an include or something
 // -- coroutines
-//   could probably do this in forth somehow
+//   why do we have to 'cell -' on resume?
 
 // TODO
 // have a way to notify on overwrite name
@@ -460,7 +460,8 @@ pub const VM = struct {
             const header: *const WordHeader = @ptrFromInt(self.current_dictionary.latest);
             self.litFloat_address = header.getCfa();
         }
-        try self.createBuiltin("execute", 0, &executeForth);
+        try self.createBuiltin("execute", 0, &execute);
+        try self.createBuiltin("execute-forth-code", 0, &executeForthCode);
         try self.createBuiltin("quit", 0, &quit);
         {
             const header: *const WordHeader = @ptrFromInt(self.current_dictionary.latest);
@@ -525,8 +526,8 @@ pub const VM = struct {
         try self.createBuiltin("0branch", 0, &zbranch);
         // TODO replace jump's with stackJumps ?
         try self.createBuiltin("jump", 0, &jump);
-        try self.createBuiltin("sjump", 0, &stackJump);
-        try self.createBuiltin("return-to", 0, &returnTo);
+        // try self.createBuiltin("sjump", 0, &stackJump);
+        // try self.createBuiltin("return-to", 0, &returnTo);
         try self.createBuiltin("nop", 0, &nop);
 
         try self.createBuiltin("true", 0, &true_);
@@ -854,9 +855,15 @@ pub const VM = struct {
 
     // ===
 
-    // note this only works with forth words
-    pub fn execute(self: *Self, xt: Cell) Error!void {
+    fn executeForthCode_internal(self: *Self, addr: Cell) Error!void {
+        try self.rstack.push(self.program_counter + @sizeOf(Cell));
+        try self.rmirror.push(.xt);
+        self.program_counter = addr;
+    }
+
+    fn execute_internal(self: *Self, xt: Cell) Error!void {
         // when you enter this, program_counter is &xt
+        // std.debug.print("asdf {}\n", .{xt});
         const xt_type_ptr: *const XtType = @ptrFromInt(xt);
         const xt_type = xt_type_ptr.*;
         switch (xt_type) {
@@ -872,15 +879,14 @@ pub const VM = struct {
         }
     }
 
-    // note this doesnt work with forth words
-    pub fn executeLoop(self: *Self, xt: Cell) Error!void {
+    pub fn executeXt(self: *Self, xt: Cell) Error!void {
         var curr_xt = xt;
         self.program_counter = 0;
 
         self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
-            try self.execute(curr_xt);
+            try self.execute_internal(curr_xt);
             if (self.program_counter == 0) {
                 try self.quit();
                 break;
@@ -924,7 +930,7 @@ pub const VM = struct {
                     try self.push(xt);
                     try self.comma();
                 } else {
-                    try self.executeLoop(xt);
+                    try self.executeXt(xt);
                 }
             } else {
                 var str = sliceAt(u8, word_addr, word_len);
@@ -1037,9 +1043,14 @@ pub const VM = struct {
         self.program_counter += @sizeOf(Cell);
     }
 
-    pub fn executeForth(self: *Self) Error!void {
+    pub fn execute(self: *Self) Error!void {
         const xt = try self.pop();
-        try self.execute(xt);
+        try self.execute_internal(xt);
+    }
+
+    pub fn executeForthCode(self: *Self) Error!void {
+        const xt = try self.pop();
+        try self.executeForthCode_internal(xt);
     }
 
     pub fn quit(self: *Self) Error!void {
@@ -1334,14 +1345,14 @@ pub const VM = struct {
         self.program_counter -= @sizeOf(Cell);
     }
 
-    pub fn stackJump(self: *Self) Error!void {
-        self.program_counter = try self.pop();
-        self.program_counter -= @sizeOf(Cell);
-    }
-
-    pub fn returnTo(self: *Self) Error!void {
-        try self.push(self.program_counter);
-    }
+    //     pub fn stackJump(self: *Self) Error!void {
+    //         self.program_counter = try self.pop();
+    //         self.program_counter -= @sizeOf(Cell);
+    //     }
+    //
+    //     pub fn returnTo(self: *Self) Error!void {
+    //         try self.push(self.program_counter);
+    //     }
 
     pub fn nop(_: *Self) Error!void {}
 
