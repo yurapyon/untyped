@@ -125,15 +125,15 @@ const Allocator = std.mem.Allocator;
 //   should i keep it this way?
 
 // at the start of execute(),
-//   return_to is on the current xt
+//   program_counter is on the current xt
 // after
 //   if it was a forth word
 //     it's on the type code of the next xt
 //     and a raw return addr has been pushed to rsack
 //   if it was a zig fn
 //     it's in the same place, unless the zig fn changed it
-// executeLoop auto advances return_to
-//   so when you explicity set return_to, you may neext to -= @sizeOf(Cell) to compensate
+// executeLoop auto advances program_counter
+//   so when you explicity set program_counter, you may neext to -= @sizeOf(Cell) to compensate
 
 // state == forth_true in compilation state
 
@@ -383,8 +383,8 @@ pub const VM = struct {
     allocator: Allocator,
 
     // execution
-    // TODO rename return_to to execution_pointer ? or something
-    return_to: Cell,
+    // TODO rename program_counter to execution_pointer ? or something
+    program_counter: Cell,
     should_bye: bool,
     should_quit: bool,
 
@@ -414,7 +414,7 @@ pub const VM = struct {
 
     pub fn init(self: *Self, allocator: Allocator) Error!void {
         self.allocator = allocator;
-        self.return_to = 0;
+        self.program_counter = 0;
 
         self.mem = try allocator.allocWithOptions(u8, mem_size, @alignOf(WordHeader), null);
         self.stack.init(@ptrCast(@alignCast(&self.mem[stack_start])));
@@ -856,14 +856,14 @@ pub const VM = struct {
 
     // note this only works with forth words
     pub fn execute(self: *Self, xt: Cell) Error!void {
-        // when you enter this, return_to is &xt
+        // when you enter this, program_counter is &xt
         const xt_type_ptr: *const XtType = @ptrFromInt(xt);
         const xt_type = xt_type_ptr.*;
         switch (xt_type) {
             .forth => {
-                try self.rstack.push(self.return_to + @sizeOf(Cell));
+                try self.rstack.push(self.program_counter + @sizeOf(Cell));
                 try self.rmirror.push(.xt);
-                self.return_to = xt;
+                self.program_counter = xt;
             },
             .zig => {
                 const zig_fn = builtinFnPtr(xt);
@@ -875,18 +875,18 @@ pub const VM = struct {
     // note this doesnt work with forth words
     pub fn executeLoop(self: *Self, xt: Cell) Error!void {
         var curr_xt = xt;
-        self.return_to = 0;
+        self.program_counter = 0;
 
         self.should_bye = false;
         self.should_quit = false;
         while (!self.should_bye and !self.should_quit) {
             try self.execute(curr_xt);
-            if (self.return_to == 0) {
+            if (self.program_counter == 0) {
                 try self.quit();
                 break;
             }
-            self.return_to += @sizeOf(Cell);
-            curr_xt = @as(*Cell, @ptrFromInt(self.return_to)).*;
+            self.program_counter += @sizeOf(Cell);
+            curr_xt = @as(*Cell, @ptrFromInt(self.program_counter)).*;
         }
     }
 
@@ -1020,21 +1020,21 @@ pub const VM = struct {
     }
 
     pub fn exit_(self: *Self) Error!void {
-        self.return_to = try self.rstack.pop();
+        self.program_counter = try self.rstack.pop();
         _ = try self.rmirror.pop();
-        self.return_to -= @sizeOf(Cell);
+        self.program_counter -= @sizeOf(Cell);
     }
 
     pub fn lit(self: *Self) Error!void {
-        const data = (try alignedAccess(Cell, self.return_to + @sizeOf(Cell))).*;
+        const data = (try alignedAccess(Cell, self.program_counter + @sizeOf(Cell))).*;
         try self.push(data);
-        self.return_to += @sizeOf(Cell);
+        self.program_counter += @sizeOf(Cell);
     }
 
     pub fn litFloat(self: *Self) Error!void {
-        const data = (try alignedAccess(Float, self.return_to + @sizeOf(Cell))).*;
+        const data = (try alignedAccess(Float, self.program_counter + @sizeOf(Cell))).*;
         try self.fstack.push(data);
-        self.return_to += @sizeOf(Cell);
+        self.program_counter += @sizeOf(Cell);
     }
 
     pub fn executeForth(self: *Self) Error!void {
@@ -1315,32 +1315,32 @@ pub const VM = struct {
     }
 
     pub fn branch(self: *Self) Error!void {
-        const jump_ct = @as(*Cell, @ptrFromInt(self.return_to + @sizeOf(Cell))).*;
-        self.return_to +%= jump_ct;
+        const jump_ct = @as(*Cell, @ptrFromInt(self.program_counter + @sizeOf(Cell))).*;
+        self.program_counter +%= jump_ct;
     }
 
     pub fn zbranch(self: *Self) Error!void {
         if ((try self.pop()) == forth_false) {
             try self.branch();
         } else {
-            self.return_to += @sizeOf(Cell);
+            self.program_counter += @sizeOf(Cell);
         }
     }
 
     // TODO note jump only works with forth words not builtins
     pub fn jump(self: *Self) Error!void {
-        const jump_addr = @as(*Cell, @ptrFromInt(self.return_to + @sizeOf(Cell))).*;
-        self.return_to = jump_addr;
-        self.return_to -= @sizeOf(Cell);
+        const jump_addr = @as(*Cell, @ptrFromInt(self.program_counter + @sizeOf(Cell))).*;
+        self.program_counter = jump_addr;
+        self.program_counter -= @sizeOf(Cell);
     }
 
     pub fn stackJump(self: *Self) Error!void {
-        self.return_to = try self.pop();
-        self.return_to -= @sizeOf(Cell);
+        self.program_counter = try self.pop();
+        self.program_counter -= @sizeOf(Cell);
     }
 
     pub fn returnTo(self: *Self) Error!void {
-        try self.push(self.return_to);
+        try self.push(self.program_counter);
     }
 
     pub fn nop(_: *Self) Error!void {}
@@ -1513,11 +1513,11 @@ pub const VM = struct {
     // TODO test works
     //      seems to work
     pub fn litString(self: *Self) Error!void {
-        const len = (try alignedAccess(Cell, self.return_to + @sizeOf(Cell))).*;
-        const str_addr = self.return_to + 2 * @sizeOf(Cell);
+        const len = (try alignedAccess(Cell, self.program_counter + @sizeOf(Cell))).*;
+        const str_addr = self.program_counter + 2 * @sizeOf(Cell);
         try self.push(str_addr);
         try self.push(len);
-        self.return_to = alignAddr(Cell, str_addr + len) - @sizeOf(Cell);
+        self.program_counter = alignAddr(Cell, str_addr + len) - @sizeOf(Cell);
     }
 
     pub fn type_(self: *Self) Error!void {
