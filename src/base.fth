@@ -937,3 +937,25 @@ create include-buf include-buf-size allot
 \ ===
 
 : date now timezone + calc-timestamp ;
+
+\ ===
+
+false value yielded
+
+: start-coroutine ( xt -- xt/0 saved-stack/0 )
+  false to yielded
+  execute
+  yielded if
+    false to yielded
+    \ save the stack
+  else
+    0
+  then
+  ;
+
+: yield true to yielded r> ;
+
+: resume-coroutine ( xt saved-stack -- xt/0 saved-stack/0 )
+  \ restore stack
+  start-coroutine ;
+

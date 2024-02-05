@@ -16,8 +16,6 @@ pub fn readFile(allocator: Allocator, filename: []const u8) ![]u8 {
 }
 
 pub fn demo(allocator: Allocator) !void {
-    std.debug.print("untyped\n", .{});
-
     var to_load: ?[:0]const u8 = null;
     var i: usize = 0;
     var args = std.process.args();
@@ -31,6 +29,8 @@ pub fn demo(allocator: Allocator) !void {
     var vm: lib.VM = undefined;
     try vm.init(allocator);
     defer vm.deinit();
+
+    std.debug.print("untyped\n", .{});
 
     if (to_load) |filename| {
         var f = try readFile(allocator, filename);

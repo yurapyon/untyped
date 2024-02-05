@@ -1,18 +1,33 @@
-: old-frame ." old" cr ;
+\ : old-frame ." old" cr ;
+\
+\ ' old-frame value frame-hook
+\
+\ frame-hook execute
+\
+\ 1024 1024 * alloc-dictionary value sub-dict
+\
+\ sub-dict use-dictionary
+\
+\ : hello 1 2 3 . . . cr ;
+\ : big-cr cr cr cr cr cr ;
+\
+\ ' hello to frame-hook
+\
+\ main-dictionary use-dictionary
+\
+\ frame-hook execute
 
-' old-frame value frame-hook
+\ : resumable
+  \ ." before" cr
+  \ yield
+  \ ." after" cr
+  \ ;
 
-frame-hook execute
+\ : thingy
+  \ ['] resumable start-coroutine
+  \ ." thing here" cr
+  \ resume-coroutine
+  \ ;
 
-1024 1024 * alloc-dictionary value sub-dict
+\ thingy
 
-sub-dict use-dictionary
-
-: hello 1 2 3 . . . cr ;
-: big-cr cr cr cr cr cr ;
-
-' hello to frame-hook
-
-main-dictionary use-dictionary
-
-frame-hook execute

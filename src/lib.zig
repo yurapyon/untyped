@@ -5,16 +5,25 @@ const Allocator = std.mem.Allocator;
 
 // TODO new 2024
 // use aligned access instead of ptrFromInt in places
+// accessing rmirror from forth, maybe only have rm0 @ and rm0 !
 // -- Error reporting / stack trace
-//   1. debug info entries can be created for xt's
-//      {
-//        previous_debug_info: Cell,
-//        xt: Cell,
-//        name: []u8,
-//        // file_location: usize,
-//       }
-//      can just save these in the dictionary without a header ??
-//    2.
+//    1. extend xt's to have a back pointer to the word header
+//       doesnt duplicate any data, doesnt have to be a back pointer (Cell)? could just be a namelen (u8)
+//       need some type of marker for no debug info
+//       extend wordheader if we need more debug info ie file position
+//       how does this work for anonymous xt's
+//         right now anonymous xts are just worded defined with name="" and hidden
+//    2. rstack mirror
+//       separate stack of just type info that's 1to1 with rstack
+//       >rm rm>
+//         >rm push to mirror
+//         rm> pop from mirror
+//       usage
+//         xt >r xt-type >rm
+//         >r drop >rm drop
+//       how to handle recursion/tailcalls
+//       assume every >r is data
+//         then have .xt rm0 ! mark last thing pushed as an xt
 //
 //   rdebug stack
 //   * separate stack of { ridx, info }
@@ -36,6 +45,15 @@ const Allocator = std.mem.Allocator;
 //       overall more useful
 //       word_header -> cfa -lookup-> debuginfo
 //       doesnt store extra info if you dont want to debug
+//       debug info entries can be created for xt's
+//       {
+//         previous_debug_info: Cell,
+//         xt: Cell,
+//         name: []u8,
+//         // file_location: usize,
+//        }
+//       can just save these in the dictionary without a header ??
+//     * if we're just storing names for xt's with the debug info, theres no point. just use wordheaders
 //     or have each xt keep a pointer to its info/word header
 //       xt -> word_header -> debug_info
 //       if we put debug_info in the word_header, this means we need a word_header for everything w debug_info
@@ -67,7 +85,6 @@ const Allocator = std.mem.Allocator;
 //        slower execution in debug mode
 //          slower to pop off rstack
 //          we need to check top of this stack whenever we pop off the return stack
-//
 // -- Shell functionality
 // -- CLI or terminal drawing, gfx
 // dont use std.debug.print
@@ -86,6 +103,8 @@ const Allocator = std.mem.Allocator;
 //   what happens if you allocate a dictionary within a subdictionary
 //   see how named hotreloads could work
 //     delete and reallocate a dictionary at runtime from an include or something
+// -- coroutines
+//   could probably do this in forth somehow
 
 // TODO
 // have a way to notify on overwrite name
@@ -105,8 +124,16 @@ const Allocator = std.mem.Allocator;
 // stack pointers point to 1 beyond the top of the stack
 //   should i keep it this way?
 
-// return_to is generally in an invalid state until the end of executing an xt
-//   might work to advance it early but idt it matters
+// at the start of execute(),
+//   return_to is on the current xt
+// after
+//   if it was a forth word
+//     it's on the type code of the next xt
+//     and a raw return addr has been pushed to rsack
+//   if it was a zig fn
+//     it's in the same place, unless the zig fn changed it
+// executeLoop auto advances return_to
+//   so when you explicity set return_to, you may neext to -= @sizeOf(Cell) to compensate
 
 // state == forth_true in compilation state
 
@@ -153,17 +180,21 @@ pub const VM = struct {
     const word_immediate_flag = 0x2;
     const word_hidden_flag = 0x1;
 
+    const rstack_ct = 64;
+
     const mem_size = 4 * 1024 * 1024;
     const stack_size = 192 * @sizeOf(Cell);
-    const rstack_size = 64 * @sizeOf(Cell);
+    const rstack_size = rstack_ct * @sizeOf(Cell);
     // TODO these two need to be cell aligned
     const fstack_size = 64 * @sizeOf(Float);
+    const rmirror_size = rstack_ct * @sizeOf(ReturnStackTag);
     const input_buffer_size = 128;
 
     const stack_start = 0;
     const rstack_start = stack_start + stack_size;
     const fstack_start = rstack_start + rstack_size;
-    const input_buffer_start = fstack_start + fstack_size;
+    const rmirror_start = fstack_start + fstack_size;
+    const input_buffer_start = rmirror_start + rmirror_size;
     const dictionary_start = input_buffer_start + input_buffer_size;
     const dictionary_size = mem_size - dictionary_start;
 
@@ -323,21 +354,16 @@ pub const VM = struct {
         };
     }
 
-    pub const XtStackDebugInfo = packed struct {
-        previous: Cell,
-        xt: Cell,
-        // info
-    };
-
-    pub const RStackDebugInfo = packed struct {
-        ridx: Cell,
-        ty: Cell,
+    pub const ReturnStackTag = enum(u8) {
+        data,
+        // TODO this should be called 'code' not 'xt'
+        xt,
     };
 
     pub const DStack = Stack(Cell, stack_size);
     pub const RStack = Stack(Cell, rstack_size);
     pub const FStack = Stack(Float, fstack_size);
-    // pub const RDebugStack = Stack(RStackDebugInfo,
+    pub const RMirrorStack = Stack(ReturnStackTag, rstack_size);
 
     pub const Dictionary = struct {
         const DictionarySelf = @This();
@@ -357,6 +383,7 @@ pub const VM = struct {
     allocator: Allocator,
 
     // execution
+    // TODO rename return_to to execution_pointer ? or something
     return_to: Cell,
     should_bye: bool,
     should_quit: bool,
@@ -377,6 +404,7 @@ pub const VM = struct {
     stack: DStack,
     rstack: RStack,
     fstack: FStack,
+    rmirror: RMirrorStack,
     input_buffer: [*]u8,
 
     main_dictionary: Dictionary,
@@ -392,6 +420,7 @@ pub const VM = struct {
         self.stack.init(@ptrCast(@alignCast(&self.mem[stack_start])));
         self.rstack.init(@ptrCast(@alignCast(&self.mem[rstack_start])));
         self.fstack.init(@ptrCast(@alignCast(&self.mem[fstack_start])));
+        self.rmirror.init(@ptrCast(@alignCast(&self.mem[rmirror_start])));
         self.input_buffer = @ptrCast(&self.mem[input_buffer_start]);
 
         self.main_dictionary.init(self.mem[dictionary_start..], 0);
@@ -494,7 +523,10 @@ pub const VM = struct {
         try self.createBuiltin(">cfa", 0, &getCfa);
         try self.createBuiltin("branch", 0, &branch);
         try self.createBuiltin("0branch", 0, &zbranch);
+        // TODO replace jump's with stackJumps ?
         try self.createBuiltin("jump", 0, &jump);
+        try self.createBuiltin("sjump", 0, &stackJump);
+        try self.createBuiltin("return-to", 0, &returnTo);
         try self.createBuiltin("nop", 0, &nop);
 
         try self.createBuiltin("true", 0, &true_);
@@ -730,6 +762,7 @@ pub const VM = struct {
     // builtin:    | WORD HEADER ... | .zig   | fn_ptr  |
     // forth word: | WORD HEADER ... | .forth | *xt ... | ?EXIT |
 
+    // TODO have this write directly into memory
     pub fn createWordHeader(
         self: *Self,
         name: []const u8,
@@ -760,6 +793,7 @@ pub const VM = struct {
         self.current_dictionary.latest = new_latest;
     }
 
+    // TODO have this write directly into memory
     pub fn createBuiltin(
         self: *Self,
         name: []const u8,
@@ -820,12 +854,15 @@ pub const VM = struct {
 
     // ===
 
+    // note this only works with forth words
     pub fn execute(self: *Self, xt: Cell) Error!void {
+        // when you enter this, return_to is &xt
         const xt_type_ptr: *const XtType = @ptrFromInt(xt);
         const xt_type = xt_type_ptr.*;
         switch (xt_type) {
             .forth => {
-                try self.rstack.push(self.return_to);
+                try self.rstack.push(self.return_to + @sizeOf(Cell));
+                try self.rmirror.push(.xt);
                 self.return_to = xt;
             },
             .zig => {
@@ -835,6 +872,7 @@ pub const VM = struct {
         }
     }
 
+    // note this doesnt work with forth words
     pub fn executeLoop(self: *Self, xt: Cell) Error!void {
         var curr_xt = xt;
         self.return_to = 0;
@@ -983,6 +1021,8 @@ pub const VM = struct {
 
     pub fn exit_(self: *Self) Error!void {
         self.return_to = try self.rstack.pop();
+        _ = try self.rmirror.pop();
+        self.return_to -= @sizeOf(Cell);
     }
 
     pub fn lit(self: *Self) Error!void {
@@ -998,12 +1038,13 @@ pub const VM = struct {
     }
 
     pub fn executeForth(self: *Self) Error!void {
-        const xt_addr = try self.pop();
-        try self.execute(xt_addr);
+        const xt = try self.pop();
+        try self.execute(xt);
     }
 
     pub fn quit(self: *Self) Error!void {
         self.rstack.clear();
+        self.rmirror.clear();
         self.should_quit = true;
     }
 
@@ -1128,10 +1169,12 @@ pub const VM = struct {
 
     pub fn toR(self: *Self) Error!void {
         try self.rstack.push(try self.pop());
+        try self.rmirror.push(.data);
     }
 
     pub fn fromR(self: *Self) Error!void {
         try self.push(try self.rstack.pop());
+        _ = try self.rmirror.pop();
     }
 
     pub fn rFetch(self: *Self) Error!void {
@@ -1289,6 +1332,15 @@ pub const VM = struct {
         const jump_addr = @as(*Cell, @ptrFromInt(self.return_to + @sizeOf(Cell))).*;
         self.return_to = jump_addr;
         self.return_to -= @sizeOf(Cell);
+    }
+
+    pub fn stackJump(self: *Self) Error!void {
+        self.return_to = try self.pop();
+        self.return_to -= @sizeOf(Cell);
+    }
+
+    pub fn returnTo(self: *Self) Error!void {
+        try self.push(self.return_to);
     }
 
     pub fn nop(_: *Self) Error!void {}
