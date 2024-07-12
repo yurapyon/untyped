@@ -1,18 +1,18 @@
 untyped
 
-forth in zig
+forth in zig (and someday webassembly)
 
 goals:
   - remain true to core principles of forth
     - simplicity
     - directness
   - usable as a general purpose language on linux
-  - embeddable in a larger program
-    - should enable hot reloading of code
-    - not afraid to define language features in zig as needed
+  - embeddable
+  - enable hot reloading
 
 features:
-  - takes some things from ansi forth and gforth
+  - takes some features from ansi forth and gforth
+  - direct-threaded
   - floats
   - files
   - dictionaries
@@ -21,6 +21,7 @@ features:
   - coroutines
 
 planned:
+  - webassembly
   - error reporting / stack traces
   - terminal drawing
   - usable as a shell
