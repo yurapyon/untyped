@@ -33,7 +33,7 @@ pub fn demo(allocator: Allocator) !void {
     std.debug.print("untyped\n", .{});
 
     if (to_load) |filename| {
-        var f = try readFile(allocator, filename);
+        const f = try readFile(allocator, filename);
         defer allocator.free(f);
         vm.interpretBuffer(f) catch |err| switch (err) {
             error.WordNotFound => {

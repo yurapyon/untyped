@@ -933,7 +933,7 @@ pub const VM = struct {
                     try self.executeXt(xt);
                 }
             } else {
-                var str = sliceAt(u8, word_addr, word_len);
+                const str = sliceAt(u8, word_addr, word_len);
                 if (parseNumber(str, self.base) catch null) |num| {
                     if (is_compiling) {
                         try self.push(self.lit_address);
@@ -1568,7 +1568,7 @@ pub const VM = struct {
     pub fn allocate(self: *Self) Error!void {
         const size = try self.pop();
         const real_size = alignAddr(Cell, size + @sizeOf(Cell));
-        var mem = self.allocator.allocWithOptions(
+        const mem = self.allocator.allocWithOptions(
             u8,
             real_size,
             @alignOf(Cell),
@@ -1862,7 +1862,7 @@ pub const VM = struct {
         };
         errdefer f.close();
 
-        var file = try self.allocator.create(std.fs.File);
+        const file = try self.allocator.create(std.fs.File);
         file.* = f;
 
         try self.push(@intFromPtr(file));
@@ -1899,7 +1899,7 @@ pub const VM = struct {
         const addr = try self.pop();
 
         var ptr: *std.fs.File = @ptrFromInt(f);
-        var buf = sliceAt(u8, addr, n);
+        const buf = sliceAt(u8, addr, n);
         // TODO handle read errors
         const ct = ptr.read(buf) catch unreachable;
 
@@ -1915,7 +1915,7 @@ pub const VM = struct {
         var ptr: *std.fs.File = @ptrFromInt(f);
         var reader = ptr.reader();
 
-        var buf = sliceAt(u8, addr, n);
+        const buf = sliceAt(u8, addr, n);
         // TODO handle read errors
         const slc = reader.readUntilDelimiterOrEof(buf, '\n') catch unreachable;
         if (slc) |s| {
@@ -1935,7 +1935,7 @@ pub const VM = struct {
 
         var ptr: *std.fs.File = @ptrFromInt(f);
         var writer = ptr.writer();
-        var buf = sliceAt(u8, addr, n);
+        const buf = sliceAt(u8, addr, n);
 
         // TODO handle errors
         const ct = writer.write(buf) catch unreachable;

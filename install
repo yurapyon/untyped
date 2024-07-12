@@ -1,5 +1,5 @@
 #!/bin/sh
 
-zig build --prefix forth -Drelease-fast=true install
+zig build --prefix forth -Doptimize=ReleaseFast install
 cp ./forth/bin/untyped /usr/bin/forth
 # zig build --prefix forth install
