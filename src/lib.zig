@@ -724,14 +724,6 @@ pub const VM = struct {
     pub const WordHeader = packed struct {
         const WordHeaderSelf = @This();
 
-        //       | WordHeader |
-        // | ... |        | | |  ...  |0|  ...  | ...
-        //  ^     ^        ^ ^ ^       ^ ^       ^
-        //  |     addr of  | | name    | |       code
-        //  |     previous | name_len  | 0 padding to @alignOf(Cell)
-        //  |     word     flags       terminator
-        //  padding to @alignOf(WordHeader)
-
         previous: Cell,
         flags: u8,
         name_len: u8,
@@ -759,9 +751,18 @@ pub const VM = struct {
         ty: Cell,
     };
 
+    // createWordHeader()
+    //       | WordHeader                   |
+    // | ... |        | | |  ...  |0|  ...  | ...
+    //  ^     ^        ^ ^ ^       ^ ^       ^
+    //  |     addr of  | | name    | |       code
+    //  |     previous | name_len  | 0 padding to @alignOf(Cell)
+    //  |     word     flags       terminator
+    //  padding to @alignOf(WordHeader)
+
     // xt's
-    // builtin:    | WORD HEADER ... | .zig   | fn_ptr  |
-    // forth word: | WORD HEADER ... | .forth | *xt ... | ?EXIT |
+    // builtin:    | WordHeader ... | .zig   | fn_ptr  |
+    // forth word: | WordHeader ... | .forth | *xt ... | ?EXIT |
 
     // TODO have this write directly into memory
     pub fn createWordHeader(
