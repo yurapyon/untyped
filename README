@@ -1,6 +1,6 @@
 untyped
 
-forth in zig (and someday webassembly)
+forth in zig
 
 goals:
   - remain true to core principles of forth
@@ -11,17 +11,14 @@ goals:
   - enable hot reloading
 
 features:
-  - takes some features from ansi forth and gforth
-  - direct-threaded
   - floats
   - files
   - dictionaries
     - kindof like wordlists
     - useful for hot reloading
-  - coroutines
+  - "coroutines"
 
 planned:
-  - webassembly
   - error reporting / stack traces
   - terminal drawing
   - usable as a shell
